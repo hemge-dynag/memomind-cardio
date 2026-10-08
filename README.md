@@ -19,10 +19,22 @@ Android app running outside the plugin model — which is what this is.
 ## What it does
 
 1. **Heart-rate sensor (BLE central → sensor)**
-   Scans for the standard Bluetooth SIG **Heart Rate service** (`0x180D`),
-   subscribes to **Heart Rate Measurement** (`0x2A37`) notifications, and
-   parses beats-per-minute from the measurement flags (uint8/uint16 formats).
-   Works with any compliant strap — no vendor SDK required.
+   Scans for BLE devices, lets you pick the source, then validates and
+   subscribes to the standard Bluetooth SIG **Heart Rate service** (`0x180D`) /
+   **Heart Rate Measurement** (`0x2A37`) and parses beats-per-minute from the
+   measurement flags (uint8/uint16 formats). Works with any compliant source —
+   no vendor SDK required. This includes wearables that broadcast optical HR
+   over the standard Bluetooth Heart Rate Profile:
+   - **Fitbit Charge 6** — swipe down → *HR on Equipment*
+   - **Google Fitbit Air** — Google Health app → Connections → *Share heart rate*
+   - **Google Pixel Watch 2 or newer** — Connected Fitness → *Connect* (a PIN
+     prompt may appear; *Extended pairing* helps with some apps)
+
+   > These wearables only broadcast while their *share heart rate* mode is on and
+   > accept a limited number of simultaneous connections. The Fitbit Web API and
+   > Health Connect are **not** used: the former only returns synced/batched data
+   > (and is being retired on 2026-10-30), so neither can drive a live HUD. The
+   > live path is the standard Bluetooth Heart Rate Profile.
 
 2. **MemoMind glasses (BLE client → glasses)**
    Connects to the glasses GM command service, subscribes to the response
@@ -63,7 +75,7 @@ Android app running outside the plugin model — which is what this is.
 Requires a JDK 17 and the Android SDK (platform 34, build-tools 34.0.0). Point
 `local.properties` at your SDK, e.g. `sdk.dir=/path/to/Android/Sdk`.
 
-**Minimum BLE test** (no glasses): pair a strap, tap *Connect heart sensor*, and
+**Minimum BLE test** (no glasses): tap *Scan for heart sensor*, pick your device, and
 confirm the BPM updates.
 
 ---

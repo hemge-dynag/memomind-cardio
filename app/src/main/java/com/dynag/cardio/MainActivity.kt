@@ -8,14 +8,18 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 
 /**
  * MemoMind Cardio — standalone companion app.
  *
- * Connects to a Bluetooth LE heart-rate sensor (e.g. Polar H10) and mirrors the
- * live heart rate onto the MemoMind smart glasses HUD over Bluetooth LE.
+ * Reads live heart rate from any Bluetooth LE source that exposes the standard
+ * Heart Rate service (0x180D): chest straps (Polar H10, Garmin, Wahoo…) and
+ * wearables that broadcast optical HR over the standard Bluetooth Heart Rate
+ * Profile (Fitbit Charge 6, Google Fitbit Air, Google Pixel Watch 2+). It then
+ * mirrors the BPM onto the MemoMind smart glasses HUD over Bluetooth LE.
  *
  * This app runs outside the MemoMind plugin ecosystem: it uses only public
  * Bluetooth protocols (standard Heart Rate service for the sensor, and the GM /
@@ -34,6 +38,7 @@ class MainActivity : AppCompatActivity(), HeartRateManager.Listener, GlassesHudC
 
     private var lastBpm: Int = 0
     private var pushEnabled = false
+    private var sensorReady = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -59,7 +64,7 @@ class MainActivity : AppCompatActivity(), HeartRateManager.Listener, GlassesHudC
         glasses = GlassesHudClient(this, this)
 
         btnSensor.setOnClickListener {
-            ensurePermissions { heartRate.start() }
+            ensurePermissions { heartRate.scanForSensors() }
         }
         btnGlasses.setOnClickListener {
             ensurePermissions { glasses.connect() }
@@ -108,11 +113,52 @@ class MainActivity : AppCompatActivity(), HeartRateManager.Listener, GlassesHudC
         runOnUiThread { appendStatus(message) }
     }
 
+    override fun onSensorsDiscovered(sensors: List<BleSensor>) {
+        runOnUiThread {
+            if (sensors.isEmpty()) {
+                appendStatus("No device found. Wake the sensor or start HR sharing, then retry.")
+                return@runOnUiThread
+            }
+            if (sensors.size == 1) {
+                heartRate.connect(sensors[0])
+                return@runOnUiThread
+            }
+            val labels = sensors.map { it.displayName }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("Choose heart-rate source")
+                .setItems(labels) { _, which -> heartRate.connect(sensors[which]) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    override fun onSensorReady() {
+        runOnUiThread {
+            sensorReady = true
+            appendStatus("Heart-rate sensor ready.")
+        }
+    }
+
+    override fun onSensorDisconnected() {
+        runOnUiThread {
+            sensorReady = false
+            appendStatus("Heart-rate sensor disconnected.")
+        }
+    }
+
+    override fun onSensorError(message: String) {
+        runOnUiThread {
+            sensorReady = false
+            appendStatus(message)
+            toast(message)
+        }
+    }
+
     override fun onHeartRate(bpm: Int, contactDetected: Boolean?) {
         lastBpm = bpm
         runOnUiThread {
             bpmText.text = bpm.toString()
-            if (pushEnabled) {
+            if (pushEnabled && sensorReady) {
                 glasses.showHeartRate(bpm)
             }
         }
