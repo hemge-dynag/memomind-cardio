@@ -36,23 +36,31 @@ Android app running outside the plugin model — which is what this is.
    > (and is being retired on 2026-10-30), so neither can drive a live HUD. The
    > live path is the standard Bluetooth Heart Rate Profile.
 
-2. **MemoMind glasses (BLE client → glasses)**
+2. **Distance, speed & time (phone GPS)**
+   A heart-rate source carries no motion data, so distance and speed come from
+   the phone's GNSS receiver (`LocationTracker`): distance is accumulated from
+   successive fixes, current speed prefers the receiver's Doppler value, and
+   average speed follows from distance ÷ elapsed time.
+
+3. **MemoMind glasses (BLE client → glasses)**
    Connects to the glasses GM command service, subscribes to the response
    characteristic (`0x2022`), and writes GM frames to the command
    characteristic (`0x2021`). It uses the public **Web Bridge** display channel
-   (service `0x0F`, command `0x28`, text channel `2`) to draw the current BPM.
+   (service `0x0F`, command `0x28`, text channel `2`) to draw three HUD objects:
+   heart rate, distance + speed, and time + average speed.
 
-3. **Live push**
-   Once the glasses are ready and a BPM is available, every new measurement is
-   pushed to the HUD automatically. A button also pushes the latest value on
-   demand.
+4. **Live push**
+   Once the glasses are ready and a reading is available, every new heart-rate
+   or GPS update is pushed to the HUD automatically. A button also pushes the
+   latest values on demand.
 
 ---
 
 ## Requirements
 
-- Android 8.0+ (API 26+). Runtime Bluetooth permissions are used on Android 12+.
-- A BLE heart-rate sensor.
+- Android 8.0+ (API 26+). Runtime Bluetooth and location permissions are used on Android 12+.
+- A BLE heart-rate source.
+- Location/GPS enabled on the phone for distance and speed.
 - MemoMind glasses, with the **Web Bridge glasses plugin running** so the text
   channel renders. (Firmware requirement: arbitrary text display is handled by
   the running Web Bridge plugin, not by a global firmware command.)
@@ -85,7 +93,8 @@ confirm the BPM updates.
 Declared in `AndroidManifest.xml`:
 
 - `BLUETOOTH_SCAN` (`neverForLocation`), `BLUETOOTH_CONNECT` — Android 12+.
-- `BLUETOOTH`, `BLUETOOTH_ADMIN`, `ACCESS_FINE_LOCATION` — legacy (API ≤ 30).
+- `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` — GPS distance/speed, and legacy BLE scanning (API ≤ 30).
+- `BLUETOOTH`, `BLUETOOTH_ADMIN` — legacy (API ≤ 30).
 
 The app requests the correct set at runtime for the device's API level.
 
@@ -123,6 +132,7 @@ app/src/main/
   java/com/dynag/cardio/
     GmFrame.kt            # GM framing + Web Bridge payload encoding
     HeartRateManager.kt   # BLE scan/connect/subscribe + 0x2A37 parsing
+    LocationTracker.kt    # GPS distance, speed, average speed, elapsed time
     GlassesHudClient.kt   # BLE to glasses; GM frame writes + MTU pacing
     MainActivity.kt       # UI, permissions, orchestration
   res/

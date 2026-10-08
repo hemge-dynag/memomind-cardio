@@ -47,6 +47,12 @@ class GlassesHudClient(
 
     private val tag = "GlassesHudClient"
 
+    companion object {
+        private const val OBJECT_HR = 1
+        private const val OBJECT_METRICS = 2
+        private const val OBJECT_TIME = 3
+    }
+
     // Conventional Bluetooth-base UUIDs; the firmware may expose a legacy alias,
     // so we also resolve characteristics by the 16-bit shortcut if needed.
     // Command downlink / response characteristics. The containing service UUID
@@ -208,10 +214,10 @@ class GlassesHudClient(
         val text = "$bpm BPM"
         val frames = GmFrame.webBridgeText(
             eventId = nextEventId(),
-            id = 1,
+            id = OBJECT_HR,
             x = 40,
-            y = 120,
-            width = 520,
+            y = 40,
+            width = 560,
             height = 120,
             border = 0,
             radius = 0,
@@ -219,6 +225,55 @@ class GlassesHudClient(
             maxFrameBytes = maxFrameForMtu()
         )
         frames.forEach { enqueue(it) }
+    }
+
+    /**
+     * Push the full workout line-up to the HUD:
+     *   object 1 — heart rate            ("142 BPM")
+     *   object 2 — distance + speed      ("3.42 km · 10.8 km/h")
+     *   object 3 — time + average speed  ("12:34 · 9.6 km/h avg")
+     *
+     * Each object is a separate Web Bridge text object with a stable id, so a
+     * re-send updates it in place. Objects are enqueued in order.
+     */
+    fun showMetrics(bpm: Int, distanceMeters: Double, speedKmh: Double, averageKmh: Double, elapsedMillis: Long) {
+        sendText(OBJECT_HR, "$bpm BPM")
+        sendText(OBJECT_METRICS, formatDistanceSpeed(distanceMeters, speedKmh))
+        sendText(OBJECT_TIME, formatTimeAvg(elapsedMillis, averageKmh))
+    }
+
+    private fun sendText(objectId: Int, text: String) {
+        val frames = GmFrame.webBridgeText(
+            eventId = nextEventId(),
+            id = objectId,
+            x = 40,
+            y = yForObject(objectId),
+            width = 560,
+            height = 120,
+            border = 0,
+            radius = 0,
+            text = text,
+            maxFrameBytes = maxFrameForMtu()
+        )
+        frames.forEach { enqueue(it) }
+    }
+
+    private fun yForObject(objectId: Int): Int = when (objectId) {
+        OBJECT_HR -> 40
+        OBJECT_METRICS -> 180
+        else -> 320
+    }
+
+    private fun formatDistanceSpeed(distanceMeters: Double, speedKmh: Double): String {
+        val km = distanceMeters / 1000.0
+        return String.format(java.util.Locale.US, "%.2f km · %.1f km/h", km, speedKmh)
+    }
+
+    private fun formatTimeAvg(elapsedMillis: Long, averageKmh: Double): String {
+        val totalSec = elapsedMillis / 1000
+        val m = totalSec / 60
+        val s = totalSec % 60
+        return String.format(java.util.Locale.US, "%d:%02d · %.1f km/h avg", m, s, averageKmh)
     }
 
     /** Clear the Web Bridge scene. */
