@@ -157,8 +157,10 @@ class GlassesHudClient(
             var write: BluetoothGattCharacteristic? = null
             var notify: BluetoothGattCharacteristic? = null
             for (service in g.services) {
-                service.getCharacteristic(commandCharUuid)?.let { write = it }
-                service.getCharacteristic(responseUuid)?.let { notify = it }
+                val w = service.getCharacteristic(commandCharUuid)
+                if (w != null) write = w
+                val n = service.getCharacteristic(responseUuid)
+                if (n != null) notify = n
             }
             if (write == null) {
                 listener.onGlassesStatus("GM control characteristic 0x2021 not found.")
