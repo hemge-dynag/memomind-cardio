@@ -128,6 +128,12 @@ class GlassesHudClient(
     private var mtu = 23
     private var linking = false
     private var linkCandidate = -1
+    /** Set once the current GATT reached STATE_CONNECTED. */
+    private var linkUp = false
+    /** TRANSPORT_AUTO retry already used for the current pick. */
+    private var autoTransportTried = false
+    /** Address of the current link attempt, for retries. */
+    private var pickAddress: String? = null
     private val candidates = ArrayList<Pair<android.bluetooth.BluetoothDevice, String>>()
     /** Devices that advertise the GM service; always tried before [candidates]. */
     private val gmCandidates = ArrayList<Pair<android.bluetooth.BluetoothDevice, String>>()
@@ -293,15 +299,49 @@ class GlassesHudClient(
         }
         linking = true
         linkCandidate = 0
+        autoTransportTried = false
+        pickAddress = address
         val name = runCatching { device.name }.getOrNull() ?: address
+        logDeviceTraits(device)
         listener.onGlassesStatus("Connecting to $name…")
-        gatt?.let { runCatching { it.close() } }
-        gatt = device.connectGatt(
-            context,
-            false,
-            gattCallback,
-            android.bluetooth.BluetoothDevice.TRANSPORT_LE
-        )
+        openGatt(device, android.bluetooth.BluetoothDevice.TRANSPORT_LE)
+    }
+
+    /** Close any previous handle, then start a fresh link to [device]. */
+    @SuppressLint("MissingPermission")
+    private fun openGatt(device: android.bluetooth.BluetoothDevice, transport: Int) {
+        // Detach first: the closing handle may still deliver a DISCONNECTED
+        // callback, which would otherwise cancel the link we start next.
+        val previous = gatt
+        gatt = null
+        if (previous != null) {
+            runCatching { previous.disconnect() }
+            runCatching { previous.close() }
+        }
+        linkUp = false
+        gatt = device.connectGatt(context, false, gattCallback, transport)
+    }
+
+    /**
+     * The glasses are a bonded, often dual-mode device. Printing its type,
+     * bond state and classic UUIDs turns a bare "did not answer" into a
+     * diagnosable line in the journal.
+     */
+    @SuppressLint("MissingPermission")
+    private fun logDeviceTraits(d: android.bluetooth.BluetoothDevice) {
+        val type = when (d.type) {
+            android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE -> "LE"
+            android.bluetooth.BluetoothDevice.DEVICE_TYPE_CLASSIC -> "CLASSIC"
+            android.bluetooth.BluetoothDevice.DEVICE_TYPE_DUAL -> "DUAL"
+            else -> "UNKNOWN"
+        }
+        val bond = when (d.bondState) {
+            android.bluetooth.BluetoothDevice.BOND_BONDED -> "bonded"
+            android.bluetooth.BluetoothDevice.BOND_BONDING -> "bonding"
+            else -> "not bonded"
+        }
+        listener.onGlassesStatus("Link target ${d.address} ($type, $bond).")
+        Log.d(tag, "target ${d.address} type=$type bond=$bond")
     }
 
     /**
@@ -390,20 +430,38 @@ class GlassesHudClient(
         linkCandidate = index
         val (device, name) = list[index]
         listener.onGlassesStatus("Found $name. Connecting…")
-        gatt?.let { runCatching { it.close() } }
-        gatt = device.connectGatt(
-            context,
-            false,
-            gattCallback,
-            android.bluetooth.BluetoothDevice.TRANSPORT_LE
-        )
+        pickAddress = device.address
+        openGatt(device, android.bluetooth.BluetoothDevice.TRANSPORT_LE)
+    }
+
+    /** One-shot retry of the same pick with TRANSPORT_AUTO. */
+    @SuppressLint("MissingPermission")
+    private fun retryAuto() {
+        val ad = adapter ?: return
+        val addr = pickAddress ?: return
+        val device = runCatching { ad.getRemoteDevice(addr) }.getOrNull() ?: return
+        linking = true
+        linkCandidate = 0
+        listener.onGlassesStatus("Retrying with the system transport…")
+        openGatt(device, android.bluetooth.BluetoothDevice.TRANSPORT_AUTO)
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            // A closed BluetoothGatt can still deliver this callback after we
+            // already opened a new link. Acting on it cancelled fresh attempts
+            // ("No MemoMind glasses answered" right after picking them).
+            if (g !== gatt) {
+                Log.d(tag, "ignoring stale callback status=$status state=$newState")
+                runCatching { g.close() }
+                return
+            }
+            Log.d(tag, "connection status=$status newState=$newState")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    linkUp = true
+                    // status 133 can still accompany a usable link; keep going.
                     listener.onGlassesStatus("Glasses connected. Discovering services…")
                     g.requestMtu(185)
                     g.discoverServices()
@@ -414,11 +472,20 @@ class GlassesHudClient(
                     cardioPending = null
                     handler.removeCallbacks(cardioFlush)
                     g.close()
-                    if (gatt === g) gatt = null
+                    gatt = null
+                    val failed = status != BluetoothGatt.GATT_SUCCESS && !linkUp
+                    if (failed) listener.onGlassesStatus("Link failed (status $status).")
                     if (linking) {
-                        // The device refused or dropped before discovery: the
-                        // next scanned candidate may be the real glasses.
                         linking = false
+                        // A dual-mode bonded device may refuse TRANSPORT_LE
+                        // outright; one AUTO retry covers that firmware.
+                        if (failed && !autoTransportTried && linkCandidate <= 0 &&
+                            !pickAddress.isNullOrBlank()
+                        ) {
+                            autoTransportTried = true
+                            retryAuto()
+                            return
+                        }
                         tryCandidate(linkCandidate + 1)
                         return
                     }
@@ -438,6 +505,10 @@ class GlassesHudClient(
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (g !== gatt) {
+                Log.d(tag, "ignoring stale discovery (status $status)")
+                return
+            }
             var write: BluetoothGattCharacteristic? = null
             var notify: BluetoothGattCharacteristic? = null
             advertisedServices.clear()
@@ -468,6 +539,7 @@ class GlassesHudClient(
                 // Direct picks have no scan list to walk through; offer the
                 // paired devices again instead of failing silently.
                 if (orderedCandidates().isEmpty()) {
+                    pickAddress = null
                     val bonded = bondedDevices()
                     if (bonded.isNotEmpty()) {
                         listener.onGlassesStatus("That device is not the glasses. Pick another one.")
@@ -770,6 +842,9 @@ class GlassesHudClient(
         cardioPending = null
         linking = false
         linkCandidate = -1
+        linkUp = false
+        pickAddress = null
+        autoTransportTried = false
         candidates.clear()
         gmCandidates.clear()
         advertisedServices.clear()

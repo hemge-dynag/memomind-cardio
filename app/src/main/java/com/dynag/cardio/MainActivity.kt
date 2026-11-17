@@ -308,10 +308,14 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
+    private var chooserDialog: AlertDialog? = null
+
     override fun onGlassesChooser(devices: List<Pair<String, String>>) {
         runOnUiThread {
+            // Repeated Connect taps must not stack identical dialogs.
+            if (chooserDialog?.isShowing == true) return@runOnUiThread
             val labels = devices.map { (addr, name) -> "$name\n$addr" }.toTypedArray()
-            AlertDialog.Builder(this)
+            val dialog = AlertDialog.Builder(this)
                 .setTitle("Which device is the glasses?")
                 .setItems(labels) { _, which ->
                     val (addr, name) = devices[which]
@@ -320,7 +324,9 @@ class MainActivity : AppCompatActivity(),
                 }
                 .setNegativeButton("Cancel") { _, _ -> glasses.cancelChooser() }
                 .setOnCancelListener { glasses.cancelChooser() }
-                .show()
+                .create()
+            chooserDialog = dialog
+            dialog.show()
         }
     }
 

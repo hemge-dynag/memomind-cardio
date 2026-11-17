@@ -9,10 +9,21 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.5 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.6 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.6 fixes** (picking "MemoMind One" ended in *No MemoMind glasses
+> answered* straight away):
+> - The disconnect callback of a **closed** GATT handle could cancel the link
+>   just started, so a pick aborted itself. Callbacks from any handle that is
+>   not the current one are now ignored.
+> - The link failure now logs its status (`Link failed (status 133).`) and the
+>   target's type/bond state (`1C:… (DUAL, bonded)`), so the journal says why.
+> - One automatic retry with the system transport when the LE link is refused
+>   before connecting.
+> - Repeated Connect taps no longer stack identical pickers.
 >
 > **1.2.5 fixes** (the glasses never advertise the GM service, so no amount
 > of scanning can identify them):
