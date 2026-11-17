@@ -85,9 +85,15 @@ class HeartRateManager(
     private var gatt: BluetoothGatt? = null
     private var controlCharacteristic: BluetoothGattCharacteristic? = null
     private var scanning = false
+    private var restartPending = false
     private var connected = false
+    private var notificationsPending = false
+    /** Pending auto-stop runnable, kept so a restart can cancel it. */
+    private var stopTimer: Runnable? = null
 
     private val found = LinkedHashMap<String, BleSensor>()
+    /** Device handles captured during the scan, reused by [connect]. */
+    private val devices = LinkedHashMap<String, BluetoothDevice>()
 
     val isConnected: Boolean
         get() = connected
@@ -115,7 +121,21 @@ class HeartRateManager(
             listener.onSensorError("BLE scanner unavailable.")
             return
         }
+        // Calling startScan while a scan is already running makes the platform
+        // answer onScanFailed(SCAN_FAILED_ALREADY_STARTED = 1). Tear the current
+        // scan down first and restart once the stack has actually released it.
+        if (scanning) {
+            abortScan()
+            if (restartPending) return
+            restartPending = true
+            handler.postDelayed({
+                restartPending = false
+                scanForSensors(scanMillis)
+            }, 600)
+            return
+        }
         found.clear()
+        devices.clear()
         scanning = true
         listener.onSensorStatus(
             "Scanning… On a Fitbit/Pixel Watch, first start \"share heart rate\"."
@@ -123,37 +143,78 @@ class HeartRateManager(
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        scanner.startScan(null, settings, scanCallback)
-        handler.postDelayed({
-            if (scanning) {
-                scanning = false
-                adapter?.bluetoothLeScanner?.stopScan(scanCallback)
-                val sensors = found.values.sortedWith(
-                    compareByDescending<BleSensor> { it.hrServiceAdvertised }
-                        .thenByDescending { it.rssi }
-                )
-                listener.onSensorStatus("Scan finished: ${sensors.size} device(s).")
-                listener.onSensorsDiscovered(sensors)
-            }
-        }, scanMillis)
+        try {
+            scanner.startScan(null, settings, scanCallback)
+        } catch (e: SecurityException) {
+            scanning = false
+            listener.onSensorError("Bluetooth permission missing for scan.")
+            return
+        } catch (e: IllegalStateException) {
+            scanning = false
+            listener.onSensorError("Could not start scan: ${e.message ?: "already running"}.")
+            return
+        }
+        val stop = Runnable { finishScan() }
+        stopTimer?.let { handler.removeCallbacks(it) }
+        stopTimer = stop
+        handler.postDelayed(stop, scanMillis)
+    }
+
+    /** Stop the scan after its duration and hand the results to the listener. */
+    @SuppressLint("MissingPermission")
+    private fun finishScan() {
+        if (!scanning) return
+        scanning = false
+        stopTimer = null
+        runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+        val sensors = found.values.sortedWith(
+            compareByDescending<BleSensor> { it.hrServiceAdvertised }
+                .thenByDescending { it.rssi }
+        )
+        listener.onSensorStatus("Scan finished: ${sensors.size} device(s).")
+        listener.onSensorsDiscovered(sensors)
+    }
+
+    /** Cancel any in-flight scan without delivering results. */
+    @SuppressLint("MissingPermission")
+    private fun abortScan() {
+        scanning = false
+        stopTimer?.let { handler.removeCallbacks(it) }
+        stopTimer = null
+        runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
     }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!scanning) return
             val record = result.scanRecord
-            val name = record?.deviceName ?: result.device.name ?: ""
             val advertisedHr = record?.serviceUuids?.any { it.uuid == hrServiceUuid } ?: false
+            val name = record?.deviceName ?: runCatching { result.device.name }.getOrNull() ?: ""
             val address = result.device.address
             val prev = found[address]
             if (prev == null || result.rssi > prev.rssi) {
                 found[address] = BleSensor(address, name, result.rssi, advertisedHr)
+                devices[address] = result.device
             }
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            results.forEach { onScanResult(ScanSettings.CALLBACK_TYPE_ALL_MATCHES, it) }
         }
 
         override fun onScanFailed(errorCode: Int) {
             scanning = false
-            listener.onSensorError("Scan failed (code $errorCode).")
+            stopTimer?.let { handler.removeCallbacks(it) }
+            stopTimer = null
+            val reason = when (errorCode) {
+                1 -> "already started"
+                2 -> "registration failed"
+                3 -> "internal error"
+                4 -> "out of resources"
+                5 -> "too many scans"
+                else -> "code $errorCode"
+            }
+            listener.onSensorError("Scan failed ($reason). Tap Scan again.")
         }
     }
 
@@ -169,15 +230,29 @@ class HeartRateManager(
             ad.bluetoothLeScanner?.stopScan(scanCallback)
         }
         listener.onSensorStatus("Connecting to ${sensor.name.ifBlank { sensor.address }}…")
-        val device = ad.getRemoteDevice(sensor.address)
+        // Prefer the handle kept from the scan: `getRemoteDevice` gave the old
+        // manager an address string that connected fine, but reusing the scanned
+        // object also keeps the address type (public/random) the peripheral
+        // actually advertises.
+        val device = devices[sensor.address] ?: ad.getRemoteDevice(sensor.address)
+        gatt?.let { runCatching { it.close() } }
         gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            // connectGatt returns a fresh handle on some devices (private
+            // addressing / autoConnect retries), so the callback's object is
+            // the only reliable reference afterwards.
+            if (gatt !== g) gatt = g
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        listener.onSensorError("Connection failed (status $status).")
+                        runCatching { g.disconnect() }
+                        return
+                    }
                     listener.onSensorStatus("Connected. Discovering services…")
                     g.discoverServices()
                 }
@@ -203,15 +278,37 @@ class HeartRateManager(
             controlCharacteristic = ch
             g.setCharacteristicNotification(ch, true)
             val cccd = ch.getDescriptor(cccdUuid)
-            if (cccd != null) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    @Suppress("DEPRECATION")
-                    g.writeDescriptor(cccd)
-                }
+            if (cccd == null) {
+                // Without a CCCD the notification cannot be enabled: report the
+                // sensor as ready anyway, the strap is connected.
+                connected = true
+                listener.onSensorReady()
+                return
+            }
+            // "Ready" is only true once the descriptor write is acknowledged:
+            // announcing it here made the glasses show a zone with no readings,
+            // because notifications were still off when the first push fired.
+            notificationsPending = true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            } else {
+                @Suppress("DEPRECATION")
+                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                @Suppress("DEPRECATION")
+                g.writeDescriptor(cccd)
+            }
+        }
+
+        override fun onDescriptorWrite(
+            g: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            if (!notificationsPending) return
+            notificationsPending = false
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                listener.onSensorError("Could not enable heart-rate notifications (status $status).")
+                return
             }
             connected = true
             listener.onSensorReady()
@@ -265,10 +362,8 @@ class HeartRateManager(
 
     @SuppressLint("MissingPermission")
     fun stop() {
-        if (scanning) {
-            scanning = false
-            adapter?.bluetoothLeScanner?.stopScan(scanCallback)
-        }
+        abortScan()
+        restartPending = false
         connected = false
         controlCharacteristic = null
         gatt?.let {

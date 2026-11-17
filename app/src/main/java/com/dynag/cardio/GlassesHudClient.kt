@@ -19,8 +19,14 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Connects to the MemoMind glasses over Bluetooth LE and sends Web Bridge
- * display messages to the HUD.
+ * Connects to the MemoMind glasses over Bluetooth LE and sends display data to
+ * the HUD, through two independent channels:
+ *
+ *  - the Web Bridge text channel (service 0x0F / command 0x28 / channel 2),
+ *    rendered by whatever Web Bridge plugin is running;
+ *  - the paired **cardio plugin** protocol (same envelope, channel 0x4344),
+ *    which draws the big BPM, zone and 30 s trend itself. The plugin signals
+ *    readiness with an `EVENT_READY` byte on channel 0x4355.
  *
  * Transport: GM command service. The command downlink characteristic is
  * 00002021-...  (Write / Write Without Response) and the response/event uplink
@@ -28,11 +34,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * is discovered and its characteristics are resolved by UUID.
  *
  * Frames are produced by [GmFrame] and written one complete physical GM frame
- * per characteristic write, paced within the negotiated ATT MTU. A running
- * Web Bridge plugin on the glasses renders the text channel.
+ * per characteristic write, paced within the negotiated ATT MTU.
  *
- * Reference: GlassSDK/docs/BLUETOOTH_DEVELOPER_GUIDE.md and
- * GlassSDK/docs/HUD_PROTOCOL.md.
+ * Reference: GlassSDK/docs/PROTOCOL.md and GlassSDK/docs/BLUETOOTH_DEVELOPER_GUIDE.md.
  */
 class GlassesHudClient(
     private val context: Context,
@@ -43,6 +47,8 @@ class GlassesHudClient(
         fun onGlassesStatus(message: String)
         fun onGlassesReady()
         fun onGlassesDisconnected()
+        /** The paired cardio plugin on the glasses announced EVENT_READY. */
+        fun onCardioReady()
     }
 
     private val tag = "GlassesHudClient"
@@ -51,6 +57,34 @@ class GlassesHudClient(
         private const val OBJECT_HR = 1
         private const val OBJECT_METRICS = 2
         private const val OBJECT_TIME = 3
+
+        // cardio plugin status (see protocol.js STATE_*)
+        private const val STATE_IDLE = 0
+        private const val STATE_CONNECTING = 1
+        private const val STATE_READING = 2
+        private const val STATE_LOST = 3
+        private const val STATE_ERROR = 4
+
+        // Minimum spacing between two BPM payloads towards the glasses.
+        private const val CARDIO_PUSH_INTERVAL_MS = 250L
+        // Give up when nothing answers a link attempt, and try the next device.
+        private const val SCAN_TIMEOUT_MS = 12000L
+    }
+
+    /** Set once the running glasses plugin has announced EVENT_READY. */
+    @Volatile
+    var cardioReady: Boolean = false
+        private set
+
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var cardioSentAt = 0L
+    private var lastCardioBpm = 0
+    private var cardioPending: ByteArray? = null
+
+    private val cardioFlush = Runnable {
+        val payload = cardioPending ?: return@Runnable
+        cardioPending = null
+        sendCardioPayload(payload)
     }
 
     // Conventional Bluetooth-base UUIDs; the firmware may expose a legacy alias,
@@ -71,6 +105,9 @@ class GlassesHudClient(
     private var scanning = false
     private var ready = false
     private var mtu = 23
+    private var linking = false
+    private var linkCandidate = -1
+    private val candidates = ArrayList<Pair<android.bluetooth.BluetoothDevice, String>>()
 
     @Volatile
     private var writeBusy = false
@@ -102,36 +139,103 @@ class GlassesHudClient(
             listener.onGlassesStatus("BLE scanner unavailable.")
             return
         }
+        // A re-connect must never stack on a live link: the old GATT would keep
+        // its notifications and its queued writes alive next to the new one.
+        val wasScanning = scanning
+        if (gatt != null || scanning) disconnect()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        scanning = true
-        listener.onGlassesStatus("Scanning for MemoMind glasses…")
-        // No service filter: the firmware may expose a legacy service UUID.
-        // We connect to the first strong candidate and validate on discovery.
-        scanner.startScan(null, settings, scanCallback)
+        // If a scan was just torn down, let the stack release it before starting
+        // a new one, otherwise startScan answers SCAN_FAILED_ALREADY_STARTED.
+        val start = Runnable {
+            scanning = true
+            listener.onGlassesStatus("Scanning for MemoMind glasses…")
+            // No service filter: the firmware may expose a legacy service UUID.
+            // Every strong candidate is cached so a wrong first pick can be retried
+            // instead of leaving the app with a dead link.
+            candidates.clear()
+            try {
+                scanner.startScan(null, settings, scanCallback)
+            } catch (e: SecurityException) {
+                scanning = false
+                listener.onGlassesStatus("Bluetooth permission missing for scan.")
+                return@Runnable
+            } catch (e: IllegalStateException) {
+                scanning = false
+                listener.onGlassesStatus("Glasses scan busy, retry.")
+                return@Runnable
+            }
+            handler.postDelayed(scanTimeout, SCAN_TIMEOUT_MS)
+        }
+        if (wasScanning) {
+            handler.postDelayed(start, 600)
+        } else {
+            start.run()
+        }
+    }
+
+    private val scanTimeout = Runnable {
+        if (!scanning) return@Runnable
+        if (candidates.isEmpty()) {
+            stopScan()
+            listener.onGlassesStatus("No MemoMind glasses found. Bring them close and retry.")
+        }
+        // Otherwise the link attempt is already running: its callback decides.
     }
 
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!scanning) return
-            scanning = false
-            adapter?.bluetoothLeScanner?.stopScan(this)
-            val name = result.device.name ?: result.device.address
-            listener.onGlassesStatus("Found $name. Connecting…")
-            gatt = result.device.connectGatt(
-                context,
-                false,
-                gattCallback,
-                android.bluetooth.BluetoothDevice.TRANSPORT_LE
-            )
+            val device = result.device
+            if (candidates.none { it.first.address == device.address }) {
+                val name = runCatching { device.name }.getOrNull() ?: device.address
+                candidates.add(device to name)
+            }
+            if (linking) return
+            stopScan()
+            tryCandidate(0)
         }
 
         override fun onScanFailed(errorCode: Int) {
             scanning = false
             listener.onGlassesStatus("Glasses scan failed (code $errorCode).")
         }
+    }
+
+    /** Stop the scan but leave the link attempt alone. */
+    @SuppressLint("MissingPermission")
+    private fun stopScan() {
+        if (!scanning) return
+        scanning = false
+        handler.removeCallbacks(scanTimeout)
+        runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+    }
+
+    /**
+     * Connect to candidate [index] and remember the others: a device that was
+     * in range but is not the glasses (or that refuses the link) must not stop
+     * the search, which is what happened when only the first hit was tried.
+     */
+    @SuppressLint("MissingPermission")
+    private fun tryCandidate(index: Int) {
+        if (index >= candidates.size) {
+            linking = false
+            listener.onGlassesStatus("No MemoMind glasses answered. Retry with them awake.")
+            return
+        }
+        linking = true
+        linkCandidate = index
+        val (device, name) = candidates[index]
+        listener.onGlassesStatus("Found $name. Connecting…")
+        gatt?.let { runCatching { it.close() } }
+        gatt = device.connectGatt(
+            context,
+            false,
+            gattCallback,
+            android.bluetooth.BluetoothDevice.TRANSPORT_LE
+        )
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -145,10 +249,20 @@ class GlassesHudClient(
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     ready = false
-                    listener.onGlassesStatus("Glasses disconnected.")
-                    listener.onGlassesDisconnected()
+                    cardioReady = false
+                    cardioPending = null
+                    handler.removeCallbacks(cardioFlush)
                     g.close()
                     if (gatt === g) gatt = null
+                    if (linking) {
+                        // The device refused or dropped before discovery: the
+                        // next scanned candidate may be the real glasses.
+                        linking = false
+                        tryCandidate(linkCandidate + 1)
+                        return
+                    }
+                    listener.onGlassesStatus("Glasses disconnected.")
+                    listener.onGlassesDisconnected()
                 }
             }
         }
@@ -169,9 +283,16 @@ class GlassesHudClient(
                 if (n != null) notify = n
             }
             if (write == null) {
+                // Not the glasses (or an old firmware): try the next candidate.
                 listener.onGlassesStatus("GM control characteristic 0x2021 not found.")
+                linking = false
+                runCatching { g.disconnect() }
+                if (gatt === g) gatt = null
+                tryCandidate(linkCandidate + 1)
                 return
             }
+            linking = false
+            candidates.clear()
             commandChar = write
             if (notify != null) {
                 g.setCharacteristicNotification(notify, true)
@@ -193,6 +314,8 @@ class GlassesHudClient(
             )
             writeRaw(heartbeat)
             ready = true
+            cardioReady = false
+            lastCardioBpm = 0
             listener.onGlassesReady()
         }
 
@@ -204,6 +327,126 @@ class GlassesHudClient(
             writeBusy = false
             drainWriteQueue()
         }
+
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicChanged(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            handleUplink(value)
+        }
+
+        // Android < 13 entry point; routed to the same parser.
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicChanged(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic
+        ) {
+            @Suppress("DEPRECATION")
+            val value = characteristic.value ?: return
+            handleUplink(value)
+        }
+    }
+
+    /**
+     * Decode a GM frame coming from the glasses. Only the cardio readiness
+     * announcement matters here: command 0x29, channel 0x4355, payload
+     * `[version, EVENT_READY]`.
+     */
+    private fun handleUplink(frame: ByteArray) {
+        if (frame.size < 9) return
+        if ((frame[0].toInt() and 0xFF) != GmFrame.FRAME_HEAD_FIRST) return
+        if ((frame[5].toInt() and 0xFF) != GmFrame.SERVICE_PLUGIN) return
+        if ((frame[6].toInt() and 0xFF) != 0x29) return
+
+        // A continuation frame starts with 0x01..; only the first one carries
+        // the TLVs we need (the cardio payloads are tiny, so one frame is enough).
+        val end = frame.size - 2
+        var i = 7
+        var channel = -1
+        var data: ByteArray? = null
+        while (i + 4 <= end) {
+            val type = frame[i].toInt() and 0xFF
+            val len = ((frame[i + 1].toInt() and 0xFF) shl 16) or
+                ((frame[i + 2].toInt() and 0xFF) shl 8) or
+                (frame[i + 3].toInt() and 0xFF)
+            i += 4
+            if (i + len > end) return
+            when (type) {
+                GmFrame.TLV_INT16 -> if (len == 2) {
+                    channel = ((frame[i].toInt() and 0xFF) shl 8) or
+                        (frame[i + 1].toInt() and 0xFF)
+                }
+                GmFrame.TLV_BYTES -> data = frame.copyOfRange(i, i + len)
+            }
+            i += len
+        }
+
+        val payload = data ?: return
+        if (channel == GmFrame.CH_CARDIO_UP && payload.size >= 2 && payload[1].toInt() == 1) {
+            if (!cardioReady) {
+                cardioReady = true
+                lastCardioBpm = 0
+                listener.onGlassesStatus("Glasses cardio plugin ready.")
+                listener.onCardioReady()
+            }
+            return
+        }
+        // Any other uplink (ACKs, Web Bridge events) is ignored for now.
+    }
+
+    // ---- Paired cardio plugin ------------------------------------------
+
+    /** Push the resting / maximum bands the glasses use for their zones. */
+    fun sendCardioConfig(restingBpm: Int, maxBpm: Int) {
+        if (!cardioReady) return
+        sendCardioPayload(GmFrame.cardioConfig(restingBpm, maxBpm))
+    }
+
+    /**
+     * Stream one reading to the cardio glasses plugin. Throttled to one payload
+     * every [CARDIO_PUSH_INTERVAL_MS]; the newest value always wins so the
+     * display never lags behind.
+     */
+    fun showCardioReading(
+        bpm: Int,
+        restingBpm: Int,
+        maxBpm: Int,
+        contactBad: Boolean,
+        trendBpm: Int
+    ) {
+        if (!cardioReady) return
+        val zone = GmFrame.cardioZone(bpm, restingBpm, maxBpm)
+        // The glasses ignore the trend byte; sending the last value keeps the
+        // wire identical to PhoneSDK/examples/cardio/protocol.js.
+        val trend = if (lastCardioBpm > 0) lastCardioBpm else bpm
+        lastCardioBpm = bpm
+        sendCardioPayload(GmFrame.cardioHeartRate(bpm, zone, contactBad, trend))
+    }
+
+    /** Report the sensor state (see protocol.js STATE_*). */
+    fun sendCardioStatus(state: Int) {
+        if (!cardioReady) return
+        sendCardioPayload(GmFrame.cardioStatus(state))
+    }
+
+    private fun sendCardioPayload(payload: ByteArray) {
+        if (!cardioReady) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - cardioSentAt < CARDIO_PUSH_INTERVAL_MS) {
+            cardioPending = payload
+            handler.postDelayed(cardioFlush, CARDIO_PUSH_INTERVAL_MS)
+            return
+        }
+        cardioSentAt = now
+        cardioPending = null
+        GmFrame.pluginMessage(
+            eventId = nextEventId(),
+            channel = GmFrame.CH_CARDIO_DOWN,
+            payload = payload,
+            maxFrameBytes = maxFrameForMtu()
+        ).forEach { enqueue(it) }
     }
 
     /**
@@ -327,6 +570,13 @@ class GlassesHudClient(
             adapter?.bluetoothLeScanner?.stopScan(scanCallback)
         }
         ready = false
+        cardioReady = false
+        cardioPending = null
+        linking = false
+        linkCandidate = -1
+        candidates.clear()
+        handler.removeCallbacks(cardioFlush)
+        handler.removeCallbacks(scanTimeout)
         writeQueue.clear()
         gatt?.let {
             try {
