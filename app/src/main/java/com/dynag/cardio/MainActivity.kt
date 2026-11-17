@@ -1,6 +1,8 @@
 package com.dynag.cardio
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -25,9 +27,14 @@ import java.util.Locale
  * heart-rate source carries no motion data. The combined workout metrics are
  * mirrored onto the MemoMind smart glasses HUD over Bluetooth LE.
  *
+ * Two displays are driven at once over the GM plugin service (0x0F / 0x28):
+ * the paired **cardio glasses plugin** (channel 0x4344, drawn natively by the
+ * `.gmp`), and the legacy Web Bridge text channel (channel 2) for when no
+ * cardio plugin is running.
+ *
  * This app runs outside the MemoMind plugin ecosystem: it uses only public
- * Bluetooth protocols (standard Heart Rate service for the sensor, and the GM /
- * Web Bridge channel for the glasses).
+ * Bluetooth protocols (standard Heart Rate service for the sensor, and the GM
+ * plugin / Web Bridge service for the glasses).
  */
 class MainActivity : AppCompatActivity(),
     HeartRateManager.Listener,
@@ -43,6 +50,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var btnGlasses: Button
     private lateinit var btnTrack: Button
     private lateinit var btnPush: Button
+    private lateinit var btnCopyLog: Button
 
     private lateinit var heartRate: HeartRateManager
     private lateinit var location: LocationTracker
@@ -55,6 +63,21 @@ class MainActivity : AppCompatActivity(),
     private var lastElapsedMs = 0L
     private var pushEnabled = false
     private var sensorReady = false
+
+    /** Bands the glasses use for their zone display (Karvonen). */
+    private val restingBpm = 60
+    private val maxBpm = 190
+
+    /** True when the sensor last reported poor skin contact. */
+    private var lastContactBad = false
+
+    private companion object {
+        // cardio plugin states (see PhoneSDK/examples/cardio/protocol.js)
+        const val STATE_IDLE = 0
+        const val STATE_CONNECTING = 1
+        const val STATE_READING = 2
+        const val STATE_ERROR = 4
+    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -79,13 +102,21 @@ class MainActivity : AppCompatActivity(),
         btnGlasses = findViewById(R.id.btnGlasses)
         btnTrack = findViewById(R.id.btnTrack)
         btnPush = findViewById(R.id.btnPush)
+        btnCopyLog = findViewById(R.id.btnCopyLog)
 
         heartRate = HeartRateManager(this, this)
         location = LocationTracker(this, this)
         glasses = GlassesHudClient(this, this)
 
         btnSensor.setOnClickListener {
-            ensurePermissions { heartRate.scanForSensors() }
+            ensurePermissions {
+                if (heartRate.isConnected) {
+                    heartRate.stop()
+                    appendStatus("Heart-rate sensor released.")
+                } else {
+                    heartRate.scanForSensors()
+                }
+            }
         }
         btnGlasses.setOnClickListener {
             ensurePermissions { glasses.connect() }
@@ -104,6 +135,11 @@ class MainActivity : AppCompatActivity(),
         btnPush.setOnClickListener {
             pushMetrics()
             appendStatus("Pushed current metrics to glasses.")
+        }
+        btnCopyLog.setOnClickListener {
+            val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("Cardio log", statusText.text))
+            appendStatus("Log copied to clipboard.")
         }
     }
 
@@ -172,7 +208,13 @@ class MainActivity : AppCompatActivity(),
     override fun onSensorReady() {
         runOnUiThread {
             sensorReady = true
-            appendStatus("Heart-rate sensor ready.")
+            appendStatus("Heart-rate sensor ready. Waiting for the first beat…")
+            glasses.sendCardioConfig(restingBpm, maxBpm)
+            // CONNECTING until a real measurement lands: a strap that reports
+            // "ready" but never sends a beat used to leave the glasses on a
+            // READING page with no value.
+            glasses.sendCardioStatus(if (lastBpm > 0) STATE_READING else STATE_CONNECTING)
+            lastBpm = 0
         }
     }
 
@@ -180,6 +222,7 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             sensorReady = false
             appendStatus("Heart-rate sensor disconnected.")
+            glasses.sendCardioStatus(STATE_IDLE)
         }
     }
 
@@ -187,14 +230,22 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             sensorReady = false
             appendStatus(message)
+            glasses.sendCardioStatus(STATE_ERROR)
             toast(message)
         }
     }
 
     override fun onHeartRate(bpm: Int, contactDetected: Boolean?) {
+        // Called on a binder thread: the glasses client is thread-safe, the
+        // widgets are not, so only the UI part is posted.
+        val firstBeat = lastBpm == 0
         lastBpm = bpm
+        lastContactBad = contactDetected == false
+        glasses.showCardioReading(bpm, restingBpm, maxBpm, lastContactBad, bpm)
+        if (firstBeat && pushEnabled) glasses.sendCardioStatus(STATE_READING)
         runOnUiThread {
             bpmText.text = bpm.toString()
+            if (firstBeat) appendStatus("First heart-rate reading received.")
             if (pushEnabled && sensorReady) pushMetrics()
         }
     }
@@ -237,6 +288,8 @@ class MainActivity : AppCompatActivity(),
             pushEnabled = true
             btnPush.isEnabled = true
             appendStatus("Glasses ready. Live push enabled.")
+            // The cardio plugin announces EVENT_READY on its own (shortly after
+            // the connection event); onCardioReady() sends the config then.
         }
     }
 
@@ -244,6 +297,14 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             pushEnabled = false
             btnPush.isEnabled = false
+        }
+    }
+
+    override fun onCardioReady() {
+        runOnUiThread {
+            glasses.sendCardioConfig(restingBpm, maxBpm)
+            glasses.sendCardioStatus(if (sensorReady) STATE_READING else STATE_CONNECTING)
+            appendStatus("Cardio plugin on glasses ready. Streaming to the HUD.")
         }
     }
 

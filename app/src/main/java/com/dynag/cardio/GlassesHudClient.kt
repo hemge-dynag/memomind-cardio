@@ -69,6 +69,12 @@ class GlassesHudClient(
         private const val CARDIO_PUSH_INTERVAL_MS = 250L
         // Give up when nothing answers a link attempt, and try the next device.
         private const val SCAN_TIMEOUT_MS = 12000L
+        // Legacy alias the firmware may advertise instead of the Bluetooth-base
+        // service (see BLUETOOTH_DEVELOPER_GUIDE.md, `BlueConfigDefault`).
+        private const val LEGACY_GM_SERVICE = "fb349b5f-8000-0080-0010-002020000000"
+        // Bluetooth-base GM service; its characteristics are 0x2021/0x2022, but
+        // advertisements list the *service* UUID, so match 0x2020 here.
+        private const val GM_SERVICE_16 = "00002020"
     }
 
     /** Set once the running glasses plugin has announced EVENT_READY. */
@@ -110,6 +116,8 @@ class GlassesHudClient(
     private var linking = false
     private var linkCandidate = -1
     private val candidates = ArrayList<Pair<android.bluetooth.BluetoothDevice, String>>()
+    /** Devices that advertise the GM service; always tried before [candidates]. */
+    private val gmCandidates = ArrayList<Pair<android.bluetooth.BluetoothDevice, String>>()
     private val advertisedServices = ArrayList<String>()
 
     @Volatile
@@ -154,10 +162,12 @@ class GlassesHudClient(
         val start = Runnable {
             scanning = true
             listener.onGlassesStatus("Scanning for MemoMind glasses…")
-            // No service filter: the firmware may expose a legacy service UUID.
-            // Every strong candidate is cached so a wrong first pick can be retried
-            // instead of leaving the app with a dead link.
+            // Devices advertising the GM service are queued first; anything
+            // else is only tried as a fallback, so a stray peripheral in range
+            // cannot be picked instead of the glasses, yet glasses that omit
+            // the service UUID from their advertisement are still reachable.
             candidates.clear()
+            gmCandidates.clear()
             try {
                 scanner.startScan(null, settings, scanCallback)
             } catch (e: SecurityException) {
@@ -180,23 +190,61 @@ class GlassesHudClient(
 
     private val scanTimeout = Runnable {
         if (!scanning) return@Runnable
-        if (candidates.isEmpty()) {
+        // No GM-advertising device showed up: fall back to whatever else was
+        // seen (its firmware may simply omit the service UUID), else give up.
+        if (candidates.isEmpty() && gmCandidates.isEmpty()) {
             stopScan()
             listener.onGlassesStatus("No MemoMind glasses found. Bring them close and retry.")
+            return@Runnable
         }
-        // Otherwise the link attempt is already running: its callback decides.
+        stopScan()
+        listener.onGlassesStatus("No GM advertisement seen; trying the nearest device.")
+        tryCandidate(0)
     }
+
+    /**
+     * True when the advertisement carries the GM control service, either under
+     * its Bluetooth-base UUID or under the legacy alias the firmware may use.
+     * Any other peripheral in range is ignored instead of being linked to.
+     */
+    private fun advertisesGmService(result: ScanResult): Boolean {
+        val uuids = result.scanRecord?.serviceUuids
+        if (uuids.isNullOrEmpty()) return false
+        for (parcel in uuids) {
+            val u = parcel.uuid ?: continue
+            val text = uuidText(u)
+            if (text.startsWith(GM_SERVICE_16)) return true
+            if (text == LEGACY_GM_SERVICE) return true
+        }
+        return false
+    }
+
+    /** All candidates, GM-advertising ones first. */
+    private fun orderedCandidates(): List<Pair<android.bluetooth.BluetoothDevice, String>> =
+        gmCandidates + candidates
 
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!scanning) return
             val device = result.device
-            if (candidates.none { it.first.address == device.address }) {
+            val gm = advertisesGmService(result)
+            val seen = gmCandidates.any { it.first.address == device.address } ||
+                candidates.any { it.first.address == device.address }
+            if (!seen) {
                 val name = runCatching { device.name }.getOrNull() ?: device.address
-                candidates.add(device to name)
+                if (gm) {
+                    gmCandidates.add(device to name)
+                    listener.onGlassesStatus("Maybe glasses: $name (advertises GM)")
+                } else {
+                    candidates.add(device to name)
+                    Log.d(tag, "candidate ${device.address} (no GM service, fallback)")
+                }
             }
             if (linking) return
+            // Only commit to a link attempt once a GM-advertising device shows
+            // up; otherwise keep scanning so a stray peripheral is not chosen.
+            if (!gm && gmCandidates.isEmpty()) return
             stopScan()
             tryCandidate(0)
         }
@@ -223,14 +271,15 @@ class GlassesHudClient(
      */
     @SuppressLint("MissingPermission")
     private fun tryCandidate(index: Int) {
-        if (index >= candidates.size) {
+        val list = orderedCandidates()
+        if (index >= list.size) {
             linking = false
             listener.onGlassesStatus("No MemoMind glasses answered. Retry with them awake.")
             return
         }
         linking = true
         linkCandidate = index
-        val (device, name) = candidates[index]
+        val (device, name) = list[index]
         listener.onGlassesStatus("Found $name. Connecting…")
         gatt?.let { runCatching { it.close() } }
         gatt = device.connectGatt(
@@ -315,6 +364,7 @@ class GlassesHudClient(
             }
             linking = false
             candidates.clear()
+            gmCandidates.clear()
             commandChar = write
             if (notify != null) {
                 g.setCharacteristicNotification(notify, true)
@@ -597,6 +647,7 @@ class GlassesHudClient(
         linking = false
         linkCandidate = -1
         candidates.clear()
+        gmCandidates.clear()
         advertisedServices.clear()
         handler.removeCallbacks(cardioFlush)
         handler.removeCallbacks(scanTimeout)

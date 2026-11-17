@@ -9,10 +9,26 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **source-only**. The project is a complete, buildable Android Studio
-> project. It has not been compiled into an APK in the authoring environment
-> (no Android SDK available there); build it locally with Android Studio or the
-> Gradle wrapper.
+> Status: **1.2.3 — source-only**. The project is a complete, buildable Android
+> Studio project. It has not been compiled into an APK in the authoring
+> environment (no Android SDK available there); build it locally with Android
+> Studio or the Gradle wrapper.
+>
+> **1.2.3 fixes**:
+> - *Connect glasses* now ignores any BLE peripheral that does not advertise
+>   the GM control service (or its legacy alias), so a stray device in range
+>   can no longer be picked instead of the glasses.
+> - The status log is selectable (long-press to select) and there is a
+>   *Copy log* button, so the full journal can be shared.
+>
+> **1.2.0 fixes** (make the Fitbit link actually deliver data):
+> - `onSensorReady()` is now fired from `onDescriptorWrite` (CCCD ACK), not from
+>   `onServicesDiscovered` — the HUD no longer shows READING with no value.
+> - `gatt` is taken from `onConnectionStateChange`'s handle and the status is
+>   checked, so a stale handle can't be used.
+> - `GlassesHudClient` now cycles through scanned candidates (12 s scan budget)
+>   instead of giving up on the first unrelated BLE device.
+> - Reconnecting no longer stacks a second GATT on a live link.
 
 ---
 
@@ -45,14 +61,30 @@ Android app running outside the plugin model — which is what this is.
 3. **MemoMind glasses (BLE client → glasses)**
    Connects to the glasses GM command service, subscribes to the response
    characteristic (`0x2022`), and writes GM frames to the command
-   characteristic (`0x2021`). It uses the public **Web Bridge** display channel
-   (service `0x0F`, command `0x28`, text channel `2`) to draw three HUD objects:
-   heart rate, distance + speed, and time + average speed.
+   characteristic (`0x2021`). Two display paths are driven at once:
+
+   - **Paired cardio plugin** (preferred). When the `cardio.gmp` glasses plugin
+     is running it answers the connection with `EVENT_READY` on channel
+     `0x4355`; the app then streams the `gm.cardio` protocol v1 on channel
+     `0x4344` through the public plugin service (service `0x0F`, command
+     `0x28`, `INT16 channel` + `BYTES payload`):
+     - `CONFIG` `[1, 3, resting, maximal]` — zone bands (Karvonen)
+     - `STATUS` `[1, 2, state]` — idle / connecting / reading / lost / error
+     - `HEART_RATE` `[1, 1, bpm_lo, bpm_hi, zone, contactBad, trend]`, throttled
+       to one payload every 250 ms
+
+     The glasses render the big BPM, the zone label and their own 30-second
+     trend line, so nothing else has to be drawn.
+   - **Web Bridge text channel** (service `0x0F`, command `0x28`, channel `2`)
+     as a fallback for when no cardio plugin is running: three text objects
+     (heart rate, distance + speed, time + average speed) pushed by the
+     *Show on glasses* button.
 
 4. **Live push**
    Once the glasses are ready and a reading is available, every new heart-rate
-   or GPS update is pushed to the HUD automatically. A button also pushes the
-   latest values on demand.
+   update is streamed to the cardio plugin automatically (throttled), and every
+   GPS update is mirrored through the Web Bridge text channel. A button also
+   pushes the latest Web Bridge values on demand.
 
 ---
 
@@ -109,11 +141,18 @@ The glasses side follows the public MemoMind protocols (no vendor SDK):
   command ID, the TLV body, and a 2-byte additive checksum (mod 65536).
 - **Plugin application service `0x0F`** — downlink command `0x28` carries
   `INT16 channel` + `BYTES data`; uplink events use command `0x29`.
+- **Cardio plugin protocol v1** — `GlassSDK/examples/cardio/cardio.c` and
+  `PhoneSDK/examples/cardio/protocol.js`. Downlink channel `0x4344` (`'CD'`),
+  upstream channel `0x4355` (`'CU'`). Commands: `HEART_RATE (1)`,
+  `STATUS (2)`, `CONFIG (3)`; event `READY (1)`; states `IDLE 0`,
+  `CONNECTING 1`, `READING 2`, `LOST 3`, `ERROR 4`; zones
+  `NONE 0`, `REST 1`, `MODERATE 2`, `EFFORT 3`, `MAXIMUM 4`.
 - **Web Bridge text channel `2`** — `GlassSDK/docs/HUD_PROTOCOL.md`. Payload:
   `id:u8 x:u16 y:u16 w:u16 h:u16 border:u8 radius:u8 utf8_text`.
 
 The encoder in `GmFrame.kt` is verified byte-for-byte against the SDK wire
-examples (`Web Bridge clear` and `Web Bridge text Hi`).
+examples (`Web Bridge clear` and `Web Bridge text Hi`); the cardio payloads
+mirror `protocol.js` byte for byte.
 
 ### BLE pacing
 
@@ -130,10 +169,10 @@ its own checksum, paced by write-completion callbacks.
 app/src/main/
   AndroidManifest.xml
   java/com/dynag/cardio/
-    GmFrame.kt            # GM framing + Web Bridge payload encoding
+    GmFrame.kt            # GM framing + Web Bridge + cardio payload encoding
     HeartRateManager.kt   # BLE scan/connect/subscribe + 0x2A37 parsing
     LocationTracker.kt    # GPS distance, speed, average speed, elapsed time
-    GlassesHudClient.kt   # BLE to glasses; GM frame writes + MTU pacing
+    GlassesHudClient.kt   # BLE to glasses; GM frame writes, uplink parsing, MTU pacing
     MainActivity.kt       # UI, permissions, orchestration
   res/
     layout/activity_main.xml

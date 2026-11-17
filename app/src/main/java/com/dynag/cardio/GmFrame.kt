@@ -23,6 +23,9 @@ package com.dynag.cardio
  *   TLV1 INT16 (0x07) = application channel
  *   TLV2 BYTES (0x01) = application payload
  *
+ * The same envelope carries the paired cardio protocol on channel 0x4344:
+ * `version, command, …` (see `cardio.c` / `protocol.js`).
+ *
  * Example wire vectors are validated against GlassSDK/docs/WIRE_EXAMPLES.md.
  */
 object GmFrame {
@@ -47,6 +50,11 @@ object GmFrame {
     const val CH_DELETE: Int = 4
     const val CH_LINE: Int = 5
     const val CH_BITMAP: Int = 6
+
+    // Paired cardio plugin channels (GlassSDK/examples/cardio/cardio.c and
+    // PhoneSDK/examples/cardio/protocol.js). 'CD' phone -> glasses, 'CU' back.
+    const val CH_CARDIO_DOWN: Int = 0x4344
+    const val CH_CARDIO_UP: Int = 0x4355
 
     /**
      * Encode a single TLV (type + 24-bit big-endian length + value).
@@ -227,5 +235,66 @@ object GmFrame {
     fun webBridgeClear(eventId: Int): ByteArray {
         val body = tlvInt16(TLV_INT16, CH_CLEAR) + tlv(TLV_BYTES, clearPayload())
         return singleFrame(eventId, SERVICE_PLUGIN, COMMAND_DELIVER, body)
+    }
+
+    // ---------------------------------------------------------------------
+    // Paired cardio plugin (service 0x0F, command 0x28, channel 0x4344)
+    // ---------------------------------------------------------------------
+
+    /** Deliver an application payload to the running glasses plugin on [channel]. */
+    fun pluginMessage(
+        eventId: Int,
+        channel: Int,
+        payload: ByteArray,
+        maxFrameBytes: Int = 512
+    ): List<ByteArray> {
+        val body = tlvInt16(TLV_INT16, channel) + tlv(TLV_BYTES, payload)
+        return fragment(eventId, SERVICE_PLUGIN, COMMAND_DELIVER, body, maxFrameBytes)
+    }
+
+    /**
+     * Cardio protocol version 1, command HEART_RATE (1).
+     *
+     * Payload: `version, 1, bpm_lo, bpm_hi, zone, (contactBad ? 1 : 0), trend`.
+     * The last byte is ignored by the glasses; they run their own one-second
+     * trend sampler.
+     */
+    fun cardioHeartRate(bpm: Int, zone: Int, contactBad: Boolean, trend: Int): ByteArray {
+        val value = bpm.coerceIn(0, 65535)
+        return byteArrayOf(
+            1,
+            1,
+            (value and 0xFF).toByte(),
+            ((value ushr 8) and 0xFF).toByte(),
+            (zone and 0xFF).toByte(),
+            (if (contactBad) 1 else 0).toByte(),
+            (trend.coerceIn(0, 255) and 0xFF).toByte()
+        )
+    }
+
+    /** Payload: `version, 2 STATUS, state` (state 0 idle … 4 error). */
+    fun cardioStatus(state: Int): ByteArray =
+        byteArrayOf(1, 2, (state and 0xFF).toByte())
+
+    /** Payload: `version, 3 CONFIG, resting, maximal`. */
+    fun cardioConfig(resting: Int, maximal: Int): ByteArray = byteArrayOf(
+        1,
+        3,
+        (resting.coerceIn(0, 255) and 0xFF).toByte(),
+        (maximal.coerceIn(0, 255) and 0xFF).toByte()
+    )
+
+    /**
+     * Karvonen-style band used by the glasses (see `compute_zone()` in
+     * `cardio.c`): 0 none, 1 rest, 2 moderate, 3 effort, 4 maximum.
+     */
+    fun cardioZone(bpm: Int, resting: Int, maximal: Int): Int {
+        val reserve = maximal - resting
+        if (reserve < 20) return 0
+        val low = resting + 5
+        if (bpm <= low) return 1
+        if (bpm < resting + reserve * 50 / 100) return 2
+        if (bpm < resting + reserve * 70 / 100) return 3
+        return 4
     }
 }
