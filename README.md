@@ -9,10 +9,20 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.7 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.8 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.8 fixes** (the link came up but the HUD stayed blank, while the phone
+> showed a live BPM — so the *cardio plugin* on the glasses never greeted us):
+> - After six seconds on a live link with no `EVENT_READY`, the app reports
+>   *No cardio plugin announced itself* and draws the reading through the
+>   **Web Bridge text** channel (`"142 BPM"`), which needs no plugin at all.
+> - Every outbound frame and every uplink is counted, and the first uplinks
+>   are logged with their head/service/command, so the journal shows whether
+>   the glasses answer at all.
+> - Unknown plugin-channel uplinks are logged with channel and payload hex.
 >
 > **1.2.7 fixes** (the journal proved the glasses are bonded over **Classic**,
 > so no BLE GATT link can ever reach them: `Link failed (status 147)`):

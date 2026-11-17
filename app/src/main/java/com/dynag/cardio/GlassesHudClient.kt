@@ -98,6 +98,9 @@ class GlassesHudClient(
         // SPP frames may use the firmware ceiling of 512 bytes.
         private const val SPP_MAX_FRAME_BYTES = 512
         private const val SPP_CONNECT_TIMEOUT_MS = 12000
+        // How long we wait for the cardio plugin's EVENT_READY before falling
+        // back to the Web Bridge text channel.
+        private const val PLUGIN_WAIT_MS = 6000L
     }
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -142,6 +145,11 @@ class GlassesHudClient(
     private var linkCandidate = -1
     /** Set once the current GATT reached STATE_CONNECTED. */
     private var linkUp = false
+    /** True once we gave up on the cardio plugin and draw with Web Bridge. */
+    @Volatile
+    private var textFallback = false
+    private var framesSent = 0
+    private var uplinksSeen = 0
     /** Live Classic SPP link, when the glasses are reached over RFCOMM. */
     private var spp: BluetoothSocket? = null
     private var sppOut: OutputStream? = null
@@ -382,6 +390,27 @@ class GlassesHudClient(
         }.start()
     }
 
+    /**
+     * The cardio plugin usually announces EVENT_READY a moment after the link
+     * comes up. If it never does, say so and draw through the Web Bridge text
+     * channel instead, so the HUD is not left blank without explanation.
+     */
+    private fun armPluginWait() {
+        handler.removeCallbacks(pluginWait)
+        pluginWaitAt = 0L
+        if (!textFallback) handler.postDelayed(pluginWait, PLUGIN_WAIT_MS)
+    }
+
+    private var pluginWaitAt = 0L
+    private val pluginWait = Runnable {
+        if (cardioReady || !ready) return@Runnable
+        textFallback = true
+        listener.onGlassesStatus(
+            "No cardio plugin announced itself; drawing with Web Bridge text."
+        )
+        listener.onGlassesStatus("Frames sent: $framesSent, uplinks seen: $uplinksSeen.")
+    }
+
     /** SPP is up: this is a confirmed glasses link, start the heartbeat. */
     @SuppressLint("MissingPermission")
     private fun onSppUp(device: android.bluetooth.BluetoothDevice, socket: BluetoothSocket) {
@@ -410,6 +439,7 @@ class GlassesHudClient(
         }
         listener.onGlassesStatus("Glasses connected over Classic SPP.")
         startSppReader(socket)
+        armPluginWait()
         writeRaw(byteArrayOf(0xFA.toByte(), 0x00, 0x00, 0x09, 0x01, 0x01, 0x01, 0x01, 0x06))
         writeBusy = false
         listener.onGlassesReady()
@@ -763,6 +793,7 @@ class GlassesHudClient(
             if (!confirmedAddress.isNullOrBlank()) {
                 prefs.edit().putString(PREF_GLASSES_ADDR, confirmedAddress).apply()
             }
+            armPluginWait()
             listener.onGlassesReady()
         }
 
@@ -802,10 +833,22 @@ class GlassesHudClient(
      * `[version, EVENT_READY]`.
      */
     private fun handleUplink(frame: ByteArray) {
-        if (frame.size < 9) return
-        if ((frame[0].toInt() and 0xFF) != GmFrame.FRAME_HEAD_FIRST) return
-        if ((frame[5].toInt() and 0xFF) != GmFrame.SERVICE_PLUGIN) return
-        if ((frame[6].toInt() and 0xFF) != 0x29) return
+        uplinksSeen++
+        if (frame.size < 9) {
+            Log.d(tag, "uplink too short: ${frame.size}")
+            return
+        }
+        val head = frame[0].toInt() and 0xFF
+        val service = frame[5].toInt() and 0xFF
+        val command = frame[6].toInt() and 0xFF
+        Log.d(tag, "uplink #$uplinksSeen head=$head svc=$service cmd=$command size=${frame.size}")
+        // Show the first few unusual uplinks so the journal explains silence.
+        if (uplinksSeen <= 8 && (head != GmFrame.FRAME_HEAD_FIRST || service != GmFrame.SERVICE_PLUGIN)) {
+            listener.onGlassesStatus("Uplink #$uplinksSeen: head=$head svc=$service cmd=$command")
+        }
+        if (head != GmFrame.FRAME_HEAD_FIRST) return
+        if (service != GmFrame.SERVICE_PLUGIN) return
+        if (command != 0x29) return
 
         // A continuation frame starts with 0x01..; only the first one carries
         // the TLVs we need (the cardio payloads are tiny, so one frame is enough).
@@ -840,7 +883,11 @@ class GlassesHudClient(
             }
             return
         }
-        // Any other uplink (ACKs, Web Bridge events) is ignored for now.
+        // Anything else on the plugin channel helps identify the payload layout.
+        if (uplinksSeen <= 12) {
+            val hex = payload.take(12).joinToString("") { "%02x".format(it) }
+            listener.onGlassesStatus("Plugin event ch=0x%04x data=$hex".format(channel))
+        }
     }
 
     // ---- Paired cardio plugin ------------------------------------------
@@ -863,7 +910,10 @@ class GlassesHudClient(
         contactBad: Boolean,
         trendBpm: Int
     ) {
-        if (!cardioReady) return
+        if (!cardioReady) {
+            if (textFallback && ready) sendText(OBJECT_HR, "$bpm BPM")
+            return
+        }
         val zone = GmFrame.cardioZone(bpm, restingBpm, maxBpm)
         // The glasses ignore the trend byte; sending the last value keeps the
         // wire identical to PhoneSDK/examples/cardio/protocol.js.
@@ -877,6 +927,9 @@ class GlassesHudClient(
         if (!cardioReady) return
         sendCardioPayload(GmFrame.cardioStatus(state))
     }
+
+    /** True once the plugin missed its greeting and text drawing took over. */
+    val usingTextFallback: Boolean get() = textFallback
 
     private fun sendCardioPayload(payload: ByteArray) {
         if (!cardioReady) return
@@ -1009,12 +1062,14 @@ class GlassesHudClient(
                 onSppLost()
                 return
             }
+            framesSent++
             writeBusy = false
             drainWriteQueue()
             return
         }
         val g = gatt ?: return
         val ch = commandChar ?: return
+        framesSent++
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             g.writeCharacteristic(ch, frame, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
         } else {
