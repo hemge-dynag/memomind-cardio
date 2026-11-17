@@ -308,6 +308,21 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
+    override fun onGlassesChooser(devices: List<Pair<String, String>>) {
+        runOnUiThread {
+            val labels = devices.map { (addr, name) -> "$name\n$addr" }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("Which device is the glasses?")
+                .setItems(labels) { _, which ->
+                    val addr = devices[which].first
+                    appendStatus("Selected ${devices[which].second} ($addr).")
+                    glasses.connectToAddress(addr)
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
     // -------------------------------------------------------------------
 
     private fun appendStatus(line: String) {

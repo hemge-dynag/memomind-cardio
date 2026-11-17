@@ -49,6 +49,13 @@ class GlassesHudClient(
         fun onGlassesDisconnected()
         /** The paired cardio plugin on the glasses announced EVENT_READY. */
         fun onCardioReady()
+
+        /**
+         * No glasses advertised the GM service. [devices] is a list of
+         * (address, name) seen during the scan, for the user to pick the
+         * glasses once; the choice is remembered for next time.
+         */
+        fun onGlassesChooser(devices: List<Pair<String, String>>)
     }
 
     private val tag = "GlassesHudClient"
@@ -75,7 +82,12 @@ class GlassesHudClient(
         // Bluetooth-base GM service; its characteristics are 0x2021/0x2022, but
         // advertisements list the *service* UUID, so match 0x2020 here.
         private const val GM_SERVICE_16 = "00002020"
+        // Persisted address of the glasses the user picked once.
+        private const val PREFS = "memo_cardio"
+        private const val PREF_GLASSES_ADDR = "glasses_addr"
     }
+
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** Set once the running glasses plugin has announced EVENT_READY. */
     @Volatile
@@ -154,6 +166,15 @@ class GlassesHudClient(
         // its notifications and its queued writes alive next to the new one.
         val wasScanning = scanning
         if (gatt != null || scanning) disconnect()
+
+        // If the user already picked the glasses once, go straight to them.
+        val saved = prefs.getString(PREF_GLASSES_ADDR, null)
+        if (!saved.isNullOrBlank()) {
+            listener.onGlassesStatus("Connecting to the saved glasses ($saved)…")
+            connectToAddress(saved)
+            return
+        }
+
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
@@ -190,16 +211,48 @@ class GlassesHudClient(
 
     private val scanTimeout = Runnable {
         if (!scanning) return@Runnable
-        // No GM-advertising device showed up: fall back to whatever else was
-        // seen (its firmware may simply omit the service UUID), else give up.
-        if (candidates.isEmpty() && gmCandidates.isEmpty()) {
+        // No GM-advertising device showed up: instead of linking to a random
+        // peripheral, ask the user to pick the glasses from what was seen.
+        val list = orderedCandidates()
+        if (list.isEmpty()) {
             stopScan()
             listener.onGlassesStatus("No MemoMind glasses found. Bring them close and retry.")
             return@Runnable
         }
         stopScan()
-        listener.onGlassesStatus("No GM advertisement seen; trying the nearest device.")
-        tryCandidate(0)
+        linking = false
+        listener.onGlassesStatus("Glasses not auto-detected. Pick them in the list.")
+        listener.onGlassesChooser(list.map { it.first.address to it.second })
+    }
+
+    /**
+     * Connect directly to a known device address (a remembered or user-picked
+     * glasses), skipping the scan. The address is persisted on success.
+     */
+    @SuppressLint("MissingPermission")
+    fun connectToAddress(address: String) {
+        val ad = adapter ?: run {
+            listener.onGlassesStatus("No Bluetooth adapter.")
+            return
+        }
+        if (gatt != null || scanning) disconnect()
+        val device = runCatching { ad.getRemoteDevice(address) }.getOrNull() ?: run {
+            listener.onGlassesStatus("Saved glasses $address unavailable; scanning instead.")
+            prefs.edit().remove(PREF_GLASSES_ADDR).apply()
+            connect()
+            return
+        }
+        linking = true
+        linkCandidate = 0
+        val name = runCatching { device.name }.getOrNull() ?: address
+        listener.onGlassesStatus("Connecting to $name…")
+        gatt?.let { runCatching { it.close() } }
+        gatt = device.connectGatt(
+            context,
+            false,
+            gattCallback,
+            android.bluetooth.BluetoothDevice.TRANSPORT_LE
+        )
     }
 
     /**
@@ -274,6 +327,13 @@ class GlassesHudClient(
         val list = orderedCandidates()
         if (index >= list.size) {
             linking = false
+            // A stale saved address that no longer answers must be forgotten so
+            // the next Connect scans afresh and offers the picker again.
+            if (prefs.contains(PREF_GLASSES_ADDR) && candidates.isEmpty() && gmCandidates.isEmpty()) {
+                prefs.edit().remove(PREF_GLASSES_ADDR).apply()
+                listener.onGlassesStatus("Saved glasses did not answer; they have been forgotten. Tap Connect to scan again.")
+                return
+            }
             listener.onGlassesStatus("No MemoMind glasses answered. Retry with them awake.")
             return
         }
@@ -388,6 +448,11 @@ class GlassesHudClient(
             ready = true
             cardioReady = false
             lastCardioBpm = 0
+            // Confirmed glasses: remember them so future connects skip the scan.
+            val confirmedAddress = runCatching { g.device.address }.getOrNull()
+            if (!confirmedAddress.isNullOrBlank()) {
+                prefs.edit().putString(PREF_GLASSES_ADDR, confirmedAddress).apply()
+            }
             listener.onGlassesReady()
         }
 
