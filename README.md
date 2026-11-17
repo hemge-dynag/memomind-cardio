@@ -9,10 +9,20 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.9 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.10 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.10 fixes** (remember the heart sensor for faster reconnection):
+> - The chosen heart-rate sensor (address + name) is saved in
+>   `SharedPreferences` under `cardio_hr`.
+> - The **Sensor** button now reconnects straight to the saved sensor without a
+>   fresh scan. If it cannot be reached (moved, powered off, paired elsewhere),
+>   the app forgets it and falls back to a normal scan once.
+> - **Long-press Sensor** forgets the saved device and scans again.
+> - The glasses address was already remembered; this adds the same convenience
+>   for the heart-rate strap.
 >
 > **1.2.9 fixes** (1.2.8 journal: link good, four uplinks — system only — then
 > *No cardio plugin announced itself*, and nothing drawn):

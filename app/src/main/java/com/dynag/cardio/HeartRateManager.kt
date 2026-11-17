@@ -72,6 +72,57 @@ class HeartRateManager(
 
     private val tag = "HeartRateManager"
 
+    private companion object {
+        // Persisted so the next launch can reconnect without a full scan.
+        const val PREFS = "cardio_hr"
+        const val PREF_SENSOR_ADDR = "sensor_addr"
+        const val PREF_SENSOR_NAME = "sensor_name"
+    }
+
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /** The sensor remembered from a previous session, if any. */
+    var savedSensor: BleSensor? = null
+        private set
+
+    init {
+        val addr = prefs.getString(PREF_SENSOR_ADDR, null)
+        if (!addr.isNullOrBlank()) {
+            savedSensor = BleSensor(
+                address = addr,
+                name = prefs.getString(PREF_SENSOR_NAME, "") ?: "",
+                rssi = 0,
+                hrServiceAdvertised = true
+            )
+        }
+    }
+
+    /** Forget the remembered sensor so the next connect does a fresh scan. */
+    fun forgetSaved() {
+        prefs.edit().remove(PREF_SENSOR_ADDR).remove(PREF_SENSOR_NAME).apply()
+        savedSensor = null
+    }
+
+    private fun remember(sensor: BleSensor) {
+        prefs.edit()
+            .putString(PREF_SENSOR_ADDR, sensor.address)
+            .putString(PREF_SENSOR_NAME, sensor.name)
+            .apply()
+        savedSensor = sensor
+    }
+
+    /**
+     * Reconnect to the remembered sensor without scanning. Falls back to a
+     * fresh scan via [Listener.onSensorsDiscovered] if there is nothing saved
+     * or the direct connection fails.
+     */
+    @SuppressLint("MissingPermission")
+    fun connectSaved(): Boolean {
+        val sensor = savedSensor ?: return false
+        connect(sensor)
+        return true
+    }
+
     private val hrServiceUuid: UUID = UUID.fromString("0000180D-0000-1000-8000-00805f9b34fb")
     private val hrMeasurementUuid: UUID = UUID.fromString("00002A37-0000-1000-8000-00805f9b34fb")
     private val cccdUuid: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -229,6 +280,7 @@ class HeartRateManager(
             scanning = false
             ad.bluetoothLeScanner?.stopScan(scanCallback)
         }
+        remember(sensor)
         listener.onSensorStatus("Connecting to ${sensor.name.ifBlank { sensor.address }}…")
         // Prefer the handle kept from the scan: `getRemoteDevice` gave the old
         // manager an address string that connected fine, but reusing the scanned

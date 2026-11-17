@@ -64,6 +64,10 @@ class MainActivity : AppCompatActivity(),
     private var pushEnabled = false
     private var sensorReady = false
 
+    /** True while a saved-sensor reconnect is in flight, so a failure can fall
+     *  back to a fresh scan once instead of looping. */
+    private var reconnectingSaved = false
+
     /** Bands the glasses use for their zone display (Karvonen). */
     private val restingBpm = 60
     private val maxBpm = 190
@@ -114,9 +118,28 @@ class MainActivity : AppCompatActivity(),
                     heartRate.stop()
                     appendStatus("Heart-rate sensor released.")
                 } else {
-                    heartRate.scanForSensors()
+                    // Reconnect to the remembered sensor first; only scan when
+                    // none is saved. Long-press to forget and re-discover.
+                    val saved = heartRate.savedSensor
+                    if (heartRate.connectSaved()) {
+                        reconnectingSaved = true
+                        appendStatus(
+                            "Reconnecting to ${saved?.name?.ifBlank { saved.address } ?: "sensor"}…"
+                        )
+                    } else {
+                        heartRate.scanForSensors()
+                    }
                 }
             }
+        }
+        btnSensor.setOnLongClickListener {
+            ensurePermissions {
+                heartRate.stop()
+                heartRate.forgetSaved()
+                appendStatus("Forgot saved sensor. Scanning again…")
+                heartRate.scanForSensors()
+            }
+            true
         }
         btnGlasses.setOnClickListener {
             ensurePermissions { glasses.connect() }
@@ -207,6 +230,7 @@ class MainActivity : AppCompatActivity(),
 
     override fun onSensorReady() {
         runOnUiThread {
+            reconnectingSaved = false
             sensorReady = true
             appendStatus("Heart-rate sensor ready. Waiting for the first beat…")
             glasses.sendCardioConfig(restingBpm, maxBpm)
@@ -221,6 +245,13 @@ class MainActivity : AppCompatActivity(),
     override fun onSensorDisconnected() {
         runOnUiThread {
             sensorReady = false
+            if (reconnectingSaved) {
+                reconnectingSaved = false
+                appendStatus("Saved sensor not found; scanning instead.")
+                heartRate.forgetSaved()
+                ensurePermissions { heartRate.scanForSensors() }
+                return@runOnUiThread
+            }
             appendStatus("Heart-rate sensor disconnected.")
             glasses.sendCardioStatus(STATE_IDLE)
         }
@@ -229,6 +260,15 @@ class MainActivity : AppCompatActivity(),
     override fun onSensorError(message: String) {
         runOnUiThread {
             sensorReady = false
+            if (reconnectingSaved) {
+                // The remembered sensor could not be reached (moved, paired
+                // elsewhere, powered off). Forget it and fall back to a scan.
+                reconnectingSaved = false
+                appendStatus("Saved sensor unreachable; scanning instead.")
+                heartRate.forgetSaved()
+                ensurePermissions { heartRate.scanForSensors() }
+                return@runOnUiThread
+            }
             appendStatus(message)
             glasses.sendCardioStatus(STATE_ERROR)
             toast(message)
