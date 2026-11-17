@@ -51,9 +51,10 @@ class GlassesHudClient(
         fun onCardioReady()
 
         /**
-         * No glasses advertised the GM service. [devices] is a list of
-         * (address, name) seen during the scan, for the user to pick the
-         * glasses once; the choice is remembered for next time.
+         * The glasses could not be identified automatically. [devices] is a
+         * list of (address, name) pairs — the phone's bonded devices first,
+         * then whatever the scan saw — for the user to pick the glasses once;
+         * the choice is remembered for next time.
          */
         fun onGlassesChooser(devices: List<Pair<String, String>>)
     }
@@ -175,6 +176,16 @@ class GlassesHudClient(
             return
         }
 
+        // The glasses do not advertise the GM service in every firmware, so a
+        // scan cannot identify them. Phones that already know the glasses
+        // (paired in Settings) get the picker straight away instead.
+        val bonded = bondedDevices()
+        if (bonded.isNotEmpty()) {
+            listener.onGlassesStatus("Pick your glasses from the paired devices.")
+            listener.onGlassesChooser(bonded)
+            return
+        }
+
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
@@ -212,17 +223,55 @@ class GlassesHudClient(
     private val scanTimeout = Runnable {
         if (!scanning) return@Runnable
         // No GM-advertising device showed up: instead of linking to a random
-        // peripheral, ask the user to pick the glasses from what was seen.
-        val list = orderedCandidates()
-        if (list.isEmpty()) {
-            stopScan()
-            listener.onGlassesStatus("No MemoMind glasses found. Bring them close and retry.")
-            return@Runnable
-        }
+        // peripheral, ask the user to pick the glasses — paired devices first,
+        // then anything the scan saw.
+        val scanned = orderedCandidates().map { it.first.address to it.second }
         stopScan()
         linking = false
+        if (scanned.isEmpty()) {
+            val bonded = bondedDevices()
+            if (bonded.isEmpty()) {
+                listener.onGlassesStatus("No MemoMind glasses found. Pair them in Settings, then retry.")
+                return@Runnable
+            }
+            listener.onGlassesStatus("No glasses announced themselves. Pick from the paired devices.")
+            listener.onGlassesChooser(bonded)
+            return@Runnable
+        }
         listener.onGlassesStatus("Glasses not auto-detected. Pick them in the list.")
-        listener.onGlassesChooser(list.map { it.first.address to it.second })
+        listener.onGlassesChooser(mergeBonded(scanned))
+    }
+
+    /** Paired devices first, then [scanned], without duplicates. */
+    private fun mergeBonded(
+        scanned: List<Pair<String, String>>
+    ): List<Pair<String, String>> {
+        val bonded = bondedDevices()
+        val seen = bonded.mapTo(HashSet()) { it.first }
+        val extra = scanned.filter { seen.add(it.first) }
+        return bonded + extra
+    }
+
+    /**
+     * Devices already paired with the phone (Settings › Bluetooth). The
+     * glasses never advertise the GM service, so this list is the most
+     * reliable way to find them: the user picks once, the address is kept.
+     */
+    @SuppressLint("MissingPermission")
+    fun bondedDevices(): List<Pair<String, String>> {
+        val ad = adapter ?: return emptyList()
+        if (!ad.isEnabled) return emptyList()
+        val bonded = runCatching { ad.bondedDevices }.getOrNull() ?: return emptyList()
+        return bonded.map { d ->
+            val name = runCatching { d.name }.getOrNull()
+            val label = if (name.isNullOrBlank()) d.address else name
+            d.address to label
+        }
+    }
+
+    /** The picker was dismissed: allow a fresh Connect attempt. */
+    fun cancelChooser() {
+        linking = false
     }
 
     /**
@@ -416,6 +465,16 @@ class GlassesHudClient(
                 linking = false
                 runCatching { g.disconnect() }
                 if (gatt === g) gatt = null
+                // Direct picks have no scan list to walk through; offer the
+                // paired devices again instead of failing silently.
+                if (orderedCandidates().isEmpty()) {
+                    val bonded = bondedDevices()
+                    if (bonded.isNotEmpty()) {
+                        listener.onGlassesStatus("That device is not the glasses. Pick another one.")
+                        listener.onGlassesChooser(bonded)
+                        return
+                    }
+                }
                 tryCandidate(linkCandidate + 1)
                 return
             }

@@ -314,11 +314,12 @@ class MainActivity : AppCompatActivity(),
             AlertDialog.Builder(this)
                 .setTitle("Which device is the glasses?")
                 .setItems(labels) { _, which ->
-                    val addr = devices[which].first
-                    appendStatus("Selected ${devices[which].second} ($addr).")
+                    val (addr, name) = devices[which]
+                    appendStatus("Selected $name ($addr).")
                     glasses.connectToAddress(addr)
                 }
-                .setNegativeButton("Cancel", null)
+                .setNegativeButton("Cancel") { _, _ -> glasses.cancelChooser() }
+                .setOnCancelListener { glasses.cancelChooser() }
                 .show()
         }
     }

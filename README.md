@@ -9,10 +9,22 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.4 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.5 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.5 fixes** (the glasses never advertise the GM service, so no amount
+> of scanning can identify them):
+> - *Connect glasses* now opens the picker on the **devices already paired
+>   with the phone** (`BluetoothAdapter.getBondedDevices()`), which is where
+>   the glasses show up reliably. Scanning only runs when the phone has no
+>   paired device at all.
+> - After a scan timeout the picker lists paired devices first, then whatever
+>   was seen, without duplicates.
+> - When a pick turns out not to be the glasses (no `0x2021`), the paired list
+>   is offered again instead of ending the attempt.
+> - Dismissing the picker resets the link state, so Connect can be used again.
 >
 > **1.2.3 fixes**:
 > - *Connect glasses* now ignores any BLE peripheral that does not advertise
