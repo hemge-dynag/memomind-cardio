@@ -95,6 +95,8 @@ class GlassesHudClient(
     private val commandCharUuid: UUID = UUID.fromString("00002021-0000-1000-8000-00805f9b34fb")
     private val responseUuid: UUID = UUID.fromString("00002022-0000-1000-8000-00805f9b34fb")
     private val cccdUuid: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    /** UUIDs as printed by the firmware, for the diagnostic log. */
+    private fun uuidText(u: UUID): String = u.toString().lowercase()
 
     private val bluetoothManager: BluetoothManager? =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -108,6 +110,7 @@ class GlassesHudClient(
     private var linking = false
     private var linkCandidate = -1
     private val candidates = ArrayList<Pair<android.bluetooth.BluetoothDevice, String>>()
+    private val advertisedServices = ArrayList<String>()
 
     @Volatile
     private var writeBusy = false
@@ -262,6 +265,9 @@ class GlassesHudClient(
                         return
                     }
                     listener.onGlassesStatus("Glasses disconnected.")
+                    if (advertisedServices.isNotEmpty()) {
+                        listener.onGlassesStatus("Services: ${advertisedServices.joinToString(", ")}")
+                    }
                     listener.onGlassesDisconnected()
                 }
             }
@@ -276,20 +282,36 @@ class GlassesHudClient(
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             var write: BluetoothGattCharacteristic? = null
             var notify: BluetoothGattCharacteristic? = null
+            advertisedServices.clear()
+            for (service in g.services) advertisedServices.add(uuidText(service.uuid))
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                listener.onGlassesStatus("Service discovery failed (status $status).")
+            }
             for (service in g.services) {
+                Log.d(tag, "service ${uuidText(service.uuid)}")
+                for (c in service.characteristics) {
+                    Log.d(tag, "  char ${uuidText(c.uuid)} props=${c.properties}")
+                }
                 val w = service.getCharacteristic(commandCharUuid)
                 if (w != null) write = w
                 val n = service.getCharacteristic(responseUuid)
                 if (n != null) notify = n
             }
             if (write == null) {
-                // Not the glasses (or an old firmware): try the next candidate.
+                // Not the glasses (or an old firmware): report what the device
+                // actually exposes, then try the next scanned candidate.
+                val summary = g.services.joinToString(", ") { uuidText(it.uuid) }
+                Log.w(tag, "0x2021 missing; services=[$summary]")
                 listener.onGlassesStatus("GM control characteristic 0x2021 not found.")
+                if (summary.isNotBlank()) listener.onGlassesStatus("Services: $summary")
                 linking = false
                 runCatching { g.disconnect() }
                 if (gatt === g) gatt = null
                 tryCandidate(linkCandidate + 1)
                 return
+            }
+            if (notify == null) {
+                listener.onGlassesStatus("GM uplink characteristic 0x2022 not found.")
             }
             linking = false
             candidates.clear()
@@ -575,6 +597,7 @@ class GlassesHudClient(
         linking = false
         linkCandidate = -1
         candidates.clear()
+        advertisedServices.clear()
         handler.removeCallbacks(cardioFlush)
         handler.removeCallbacks(scanTimeout)
         writeQueue.clear()
