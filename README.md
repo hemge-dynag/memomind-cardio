@@ -9,10 +9,21 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.8 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.9 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.9 fixes** (1.2.8 journal: link good, four uplinks — system only — then
+> *No cardio plugin announced itself*, and nothing drawn):
+> - Readings are now pushed *continuously* in text fallback, throttled to four
+>   per second, instead of one push per beat that silently dropped the rest.
+> - Right after the six-second plugin timeout the app draws a **"HUD check"**
+>   line, so the journal and the display together say whether the Web Bridge
+>   renderer is running at all.
+> - Any `0x29` reply on a non-cardio channel is reported as *Web Bridge
+>   answered*, which distinguishes "no renderer" from "wrong drawing".
+> - Pending text/plugin callbacks are cancelled on disconnect.
 >
 > **1.2.8 fixes** (the link came up but the HUD stayed blank, while the phone
 > showed a live BPM — so the *cardio plugin* on the glasses never greeted us):

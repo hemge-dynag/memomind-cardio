@@ -68,6 +68,8 @@ class GlassesHudClient(
         private const val OBJECT_HR = 1
         private const val OBJECT_METRICS = 2
         private const val OBJECT_TIME = 3
+        // Object 4 is the plugin-probe line, kept apart from the workout rows.
+        private const val OBJECT_PROBE = 4
 
         // cardio plugin status (see protocol.js STATE_*)
         private const val STATE_IDLE = 0
@@ -150,6 +152,7 @@ class GlassesHudClient(
     private var textFallback = false
     private var framesSent = 0
     private var uplinksSeen = 0
+    private var bridgeAcked = false
     /** Live Classic SPP link, when the glasses are reached over RFCOMM. */
     private var spp: BluetoothSocket? = null
     private var sppOut: OutputStream? = null
@@ -406,9 +409,21 @@ class GlassesHudClient(
         if (cardioReady || !ready) return@Runnable
         textFallback = true
         listener.onGlassesStatus(
-            "No cardio plugin announced itself; drawing with Web Bridge text."
+            "No cardio plugin answered; testing the Web Bridge text channel."
         )
         listener.onGlassesStatus("Frames sent: $framesSent, uplinks seen: $uplinksSeen.")
+        GmFrame.webBridgeText(
+            eventId = nextEventId(),
+            id = OBJECT_PROBE,
+            x = 20,
+            y = 250,
+            width = 560,
+            height = 60,
+            border = 0,
+            radius = 0,
+            text = "HUD check",
+            maxFrameBytes = maxFrameForMtu()
+        ).forEach { enqueue(it) }
     }
 
     /** SPP is up: this is a confirmed glasses link, start the heartbeat. */
@@ -874,6 +889,13 @@ class GlassesHudClient(
         }
 
         val payload = data ?: return
+        if (channel != GmFrame.CH_CARDIO_UP && !bridgeAcked) {
+            // Command 0x29 with a non-cardio channel is the Web Bridge plugin
+            // answering a delivery: text drawing is possible on this device.
+            bridgeAcked = true
+            val hex = payload.take(16).joinToString("") { "%02x".format(it) }
+            listener.onGlassesStatus("Web Bridge answered (ch=0x%04x data=$hex).".format(channel))
+        }
         if (channel == GmFrame.CH_CARDIO_UP && payload.size >= 2 && payload[1].toInt() == 1) {
             if (!cardioReady) {
                 cardioReady = true
@@ -911,7 +933,9 @@ class GlassesHudClient(
         trendBpm: Int
     ) {
         if (!cardioReady) {
-            if (textFallback && ready) sendText(OBJECT_HR, "$bpm BPM")
+            // Without the paired plugin, Web Bridge text is the only path: draw
+            // one HR object per [CARDIO_PUSH_INTERVAL_MS], newest value wins.
+            if (textFallback && ready) scheduleTextReading(bpm)
             return
         }
         val zone = GmFrame.cardioZone(bpm, restingBpm, maxBpm)
@@ -922,6 +946,35 @@ class GlassesHudClient(
         sendCardioPayload(GmFrame.cardioHeartRate(bpm, zone, contactBad, trend))
     }
 
+    private var pendingTextBpm = 0
+    private var textSentAt = 0L
+
+    /**
+     * Text fallback is throttled like the plugin payload: a sensor can fire
+     * several times per second and the HUD only needs the newest value.
+     */
+    private fun scheduleTextReading(bpm: Int) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - textSentAt >= CARDIO_PUSH_INTERVAL_MS) {
+            textSentAt = now
+            lastCardioBpm = bpm
+            sendText(OBJECT_HR, "$bpm BPM")
+            return
+        }
+        pendingTextBpm = bpm
+        handler.removeCallbacks(textFlush)
+        handler.postDelayed(textFlush, CARDIO_PUSH_INTERVAL_MS)
+    }
+
+    private val textFlush = Runnable {
+        val bpm = pendingTextBpm
+        if (bpm <= 0 || !textFallback) return@Runnable
+        pendingTextBpm = 0
+        textSentAt = android.os.SystemClock.elapsedRealtime()
+        lastCardioBpm = bpm
+        sendText(OBJECT_HR, "$bpm BPM")
+    }
+
     /** Report the sensor state (see protocol.js STATE_*). */
     fun sendCardioStatus(state: Int) {
         if (!cardioReady) return
@@ -930,6 +983,9 @@ class GlassesHudClient(
 
     /** True once the plugin missed its greeting and text drawing took over. */
     val usingTextFallback: Boolean get() = textFallback
+
+    /** True when a Web Bridge delivery ACK came back for one of our frames. */
+    val webBridgeAlive: Boolean get() = bridgeAcked
 
     private fun sendCardioPayload(payload: ByteArray) {
         if (!cardioReady) return
@@ -1100,6 +1156,9 @@ class GlassesHudClient(
         gmCandidates.clear()
         advertisedServices.clear()
         handler.removeCallbacks(cardioFlush)
+        handler.removeCallbacks(pluginWait)
+        handler.removeCallbacks(textFlush)
+        pendingTextBpm = 0
         handler.removeCallbacks(scanTimeout)
         writeQueue.clear()
         sppReader?.interrupt()
