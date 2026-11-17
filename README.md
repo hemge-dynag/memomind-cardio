@@ -9,10 +9,21 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.6 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.7 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.7 fixes** (the journal proved the glasses are bonded over **Classic**,
+> so no BLE GATT link can ever reach them: `Link failed (status 147)`):
+> - Devices bonded as Classic or Dual now connect over the **Classic SPP
+>   command service** (`00007033-…`, then standard `00001101-…`, secure then
+>   insecure) exactly like the official App. BLE GATT is kept for LE-only
+>   devices and as the automatic fallback when SPP fails.
+> - SPP frames use the firmware ceiling (512 bytes) and the byte stream is
+>   reassembled into complete GM frames before parsing.
+> - The journal prints whether the phone already records an SPP service for
+>   the target.
 >
 > **1.2.6 fixes** (picking "MemoMind One" ended in *No MemoMind glasses
 > answered* straight away):

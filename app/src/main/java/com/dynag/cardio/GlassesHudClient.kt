@@ -8,12 +8,15 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothSocket
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
@@ -86,6 +89,15 @@ class GlassesHudClient(
         // Persisted address of the glasses the user picked once.
         private const val PREFS = "memo_cardio"
         private const val PREF_GLASSES_ADDR = "glasses_addr"
+
+        // Classic SPP command transport, the one the official App prefers.
+        // The glasses never advertise the BLE GM service on every firmware,
+        // and a phone that paired them over Classic can only reach them here.
+        private const val UUID_GM_SPP = "00007033-0000-1000-8000-00805f9b34fb"
+        private const val UUID_SPP = "00001101-0000-1000-8000-00805f9b34fb"
+        // SPP frames may use the firmware ceiling of 512 bytes.
+        private const val SPP_MAX_FRAME_BYTES = 512
+        private const val SPP_CONNECT_TIMEOUT_MS = 12000
     }
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -130,6 +142,11 @@ class GlassesHudClient(
     private var linkCandidate = -1
     /** Set once the current GATT reached STATE_CONNECTED. */
     private var linkUp = false
+    /** Live Classic SPP link, when the glasses are reached over RFCOMM. */
+    private var spp: BluetoothSocket? = null
+    private var sppOut: OutputStream? = null
+    private var sppReader: Thread? = null
+    private val sppWriteLock = Any()
     /** TRANSPORT_AUTO retry already used for the current pick. */
     private var autoTransportTried = false
     /** Address of the current link attempt, for retries. */
@@ -304,7 +321,162 @@ class GlassesHudClient(
         val name = runCatching { device.name }.getOrNull() ?: address
         logDeviceTraits(device)
         listener.onGlassesStatus("Connecting to $name…")
+        // A device bonded as CLASSIC (or DUAL) is reached over the Classic SPP
+        // command service; its BLE GATT server is not exposed, which is why a
+        // LE link ended on "Link failed (status 147)".
+        if (device.type != android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE) {
+            connectSpp(device, name)
+            return
+        }
         openGatt(device, android.bluetooth.BluetoothDevice.TRANSPORT_LE)
+    }
+
+    /**
+     * Open the Classic SPP command channel. The documented service is
+     * 0x7033, with the standard 0x1101 SPP UUID as the App's fallback;
+     * both are tried secure first, then insecure.
+     */
+    @SuppressLint("MissingPermission")
+    private fun connectSpp(device: android.bluetooth.BluetoothDevice, name: String) {
+        val ad = adapter
+        if (ad == null) {
+            listener.onGlassesStatus("No Bluetooth adapter.")
+            return
+        }
+        runCatching { ad.cancelDiscovery() }
+        listener.onGlassesStatus("Opening the Classic link to $name…")
+        Thread {
+            val sockets = listOf(
+                UUID.fromString(UUID_GM_SPP) to true,
+                UUID.fromString(UUID_SPP) to true,
+                UUID.fromString(UUID_GM_SPP) to false
+            )
+            var lastError = "no RFCOMM service"
+            for ((uuid, secure) in sockets) {
+                val socket = try {
+                    if (secure) {
+                        device.createRfcommSocketToServiceRecord(uuid)
+                    } else {
+                        device.createInsecureRfcommSocketToServiceRecord(uuid)
+                    }
+                } catch (e: Exception) {
+                    lastError = e.message ?: e.javaClass.simpleName
+                    continue
+                }
+                try {
+                    runCatching { ad.cancelDiscovery() }
+                    socket.connect()
+                    handler.post { onSppUp(device, socket) }
+                    return@Thread
+                } catch (e: Exception) {
+                    lastError = "status ${runCatching { e.message }.getOrNull()} ($uuid)"
+                    runCatching { socket.close() }
+                }
+            }
+            handler.post {
+                linking = false
+                listener.onGlassesStatus("Classic link failed: $lastError")
+                listener.onGlassesStatus("Trying Bluetooth LE instead…")
+                openGatt(device, android.bluetooth.BluetoothDevice.TRANSPORT_LE)
+            }
+        }.start()
+    }
+
+    /** SPP is up: this is a confirmed glasses link, start the heartbeat. */
+    @SuppressLint("MissingPermission")
+    private fun onSppUp(device: android.bluetooth.BluetoothDevice, socket: BluetoothSocket) {
+        if (gatt != null) {
+            runCatching { gatt?.close() }
+            gatt = null
+        }
+        spp = socket
+        sppOut = runCatching { socket.outputStream }.getOrNull()
+        if (sppOut == null) {
+            listener.onGlassesStatus("Classic link has no output stream.")
+            runCatching { socket.close() }
+            spp = null
+            linking = false
+            return
+        }
+        linking = false
+        linkUp = true
+        ready = true
+        cardioReady = false
+        lastCardioBpm = 0
+        mtu = SPP_MAX_FRAME_BYTES
+        val addr = runCatching { device.address }.getOrNull()
+        if (!addr.isNullOrBlank()) {
+            prefs.edit().putString(PREF_GLASSES_ADDR, addr).apply()
+        }
+        listener.onGlassesStatus("Glasses connected over Classic SPP.")
+        startSppReader(socket)
+        writeRaw(byteArrayOf(0xFA.toByte(), 0x00, 0x00, 0x09, 0x01, 0x01, 0x01, 0x01, 0x06))
+        writeBusy = false
+        listener.onGlassesReady()
+    }
+
+    /** Read the SPP byte stream and hand complete GM frames to the parser. */
+    private fun startSppReader(socket: BluetoothSocket) {
+        sppReader?.interrupt()
+        val input: InputStream = runCatching { socket.inputStream }.getOrNull() ?: return
+        val reader = Thread {
+            val buffer = ByteArray(1024)
+            var acc = ByteArray(0)
+            try {
+                while (spp === socket) {
+                    val n = input.read(buffer)
+                    if (n <= 0) break
+                    acc += buffer.copyOf(n)
+                    acc = drainStream(acc)
+                }
+            } catch (e: Exception) {
+                Log.d(tag, "SPP reader ended: ${e.message}")
+            }
+            handler.post {
+                if (spp === socket) onSppLost()
+            }
+        }
+        reader.isDaemon = true
+        sppReader = reader
+        reader.start()
+    }
+
+    /** Extract every complete physical frame from [acc]. */
+    private fun drainStream(acc: ByteArray): ByteArray {
+        var offset = 0
+        while (acc.size - offset >= 4) {
+            val head = acc[offset].toInt() and 0xFF
+            if (head != GmFrame.FRAME_HEAD_FIRST && head < 0x01) {
+                offset++
+                continue
+            }
+            val logical = ((acc[offset + 1].toInt() and 0xFF) shl 16) or
+                ((acc[offset + 2].toInt() and 0xFF) shl 8) or
+                (acc[offset + 3].toInt() and 0xFF)
+            if (logical < 9 || logical > SPP_MAX_FRAME_BYTES) {
+                Log.w(tag, "SPP: unsupported frame length $logical")
+                offset++
+                continue
+            }
+            if (acc.size - offset < logical) break
+            val frame = acc.copyOfRange(offset, offset + logical)
+            offset += logical
+            handleUplink(frame)
+        }
+        return if (offset == 0) acc else acc.copyOfRange(offset, acc.size)
+    }
+
+    private fun onSppLost() {
+        spp = null
+        sppOut = null
+        ready = false
+        cardioReady = false
+        cardioPending = null
+        handler.removeCallbacks(cardioFlush)
+        // A saved address that fails later is kept: the glasses may simply be
+        // out of range, and re-picking them on every start would be noise.
+        listener.onGlassesStatus("Glasses link lost.")
+        listener.onGlassesDisconnected()
     }
 
     /** Close any previous handle, then start a fresh link to [device]. */
@@ -331,17 +503,24 @@ class GlassesHudClient(
     private fun logDeviceTraits(d: android.bluetooth.BluetoothDevice) {
         val type = when (d.type) {
             android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE -> "LE"
-            android.bluetooth.BluetoothDevice.DEVICE_TYPE_CLASSIC -> "CLASSIC"
-            android.bluetooth.BluetoothDevice.DEVICE_TYPE_DUAL -> "DUAL"
+            android.bluetooth.BluetoothDevice.DEVICE_TYPE_CLASSIC -> "CLASSIC (SPP)"
+            android.bluetooth.BluetoothDevice.DEVICE_TYPE_DUAL -> "DUAL (SPP first)"
             else -> "UNKNOWN"
         }
+        val sppPresent = runCatching {
+            d.uuids?.any {
+                val t = it.uuid.toString().lowercase()
+                t == UUID_GM_SPP || t == UUID_SPP
+            } ?: false
+        }.getOrNull() ?: false
         val bond = when (d.bondState) {
             android.bluetooth.BluetoothDevice.BOND_BONDED -> "bonded"
             android.bluetooth.BluetoothDevice.BOND_BONDING -> "bonding"
             else -> "not bonded"
         }
         listener.onGlassesStatus("Link target ${d.address} ($type, $bond).")
-        Log.d(tag, "target ${d.address} type=$type bond=$bond")
+        if (sppPresent) listener.onGlassesStatus("The phone records an SPP service for it.")
+        Log.d(tag, "target ${d.address} type=$type bond=$bond spp=$sppPresent")
     }
 
     /**
@@ -798,6 +977,7 @@ class GlassesHudClient(
      * negotiated higher.
      */
     private fun maxFrameForMtu(): Int {
+        if (sppOut != null) return SPP_MAX_FRAME_BYTES
         return (mtu - 3).coerceAtLeast(20)
     }
 
@@ -809,7 +989,9 @@ class GlassesHudClient(
     @SuppressLint("MissingPermission")
     private fun drainWriteQueue() {
         if (writeBusy) return
-        if (gatt == null || commandChar == null) return
+        if (sppOut == null) {
+            if (gatt == null || commandChar == null) return
+        }
         val frame = writeQueue.poll() ?: return
         writeBusy = true
         writeRaw(frame)
@@ -817,6 +999,20 @@ class GlassesHudClient(
 
     @SuppressLint("MissingPermission")
     private fun writeRaw(frame: ByteArray) {
+        val out = sppOut
+        if (out != null) {
+            // Classic SPP is a byte stream: one complete GM frame per write.
+            try {
+                synchronized(sppWriteLock) { out.write(frame); out.flush() }
+            } catch (e: Exception) {
+                Log.w(tag, "SPP write failed", e)
+                onSppLost()
+                return
+            }
+            writeBusy = false
+            drainWriteQueue()
+            return
+        }
         val g = gatt ?: return
         val ch = commandChar ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -851,6 +1047,14 @@ class GlassesHudClient(
         handler.removeCallbacks(cardioFlush)
         handler.removeCallbacks(scanTimeout)
         writeQueue.clear()
+        sppReader?.interrupt()
+        sppReader = null
+        sppOut?.let { runCatching { it.close() } }
+        sppOut = null
+        spp?.let {
+            spp = null
+            runCatching { it.close() }
+        }
         gatt?.let {
             try {
                 it.disconnect()
@@ -860,5 +1064,6 @@ class GlassesHudClient(
             }
         }
         gatt = null
+        linkUp = false
     }
 }
