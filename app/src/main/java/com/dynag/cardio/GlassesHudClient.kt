@@ -185,16 +185,16 @@ class GlassesHudClient(
     fun connect() {
         val ad = adapter
         if (ad == null) {
-            listener.onGlassesStatus("No Bluetooth adapter.")
+            listener.onGlassesStatus("Aucun adaptateur Bluetooth.")
             return
         }
         if (!ad.isEnabled) {
-            listener.onGlassesStatus("Bluetooth is off.")
+            listener.onGlassesStatus("Bluetooth désactivé.")
             return
         }
         val scanner = ad.bluetoothLeScanner
         if (scanner == null) {
-            listener.onGlassesStatus("BLE scanner unavailable.")
+            listener.onGlassesStatus("Scanner BLE indisponible.")
             return
         }
         // A re-connect must never stack on a live link: the old GATT would keep
@@ -205,7 +205,7 @@ class GlassesHudClient(
         // If the user already picked the glasses once, go straight to them.
         val saved = prefs.getString(PREF_GLASSES_ADDR, null)
         if (!saved.isNullOrBlank()) {
-            listener.onGlassesStatus("Connecting to the saved glasses ($saved)…")
+            listener.onGlassesStatus("Connexion aux lunettes enregistrées ($saved)…")
             connectToAddress(saved)
             return
         }
@@ -215,7 +215,7 @@ class GlassesHudClient(
         // (paired in Settings) get the picker straight away instead.
         val bonded = bondedDevices()
         if (bonded.isNotEmpty()) {
-            listener.onGlassesStatus("Pick your glasses from the paired devices.")
+            listener.onGlassesStatus("Choisissez vos lunettes parmi les appareils appairés.")
             listener.onGlassesChooser(bonded)
             return
         }
@@ -227,7 +227,7 @@ class GlassesHudClient(
         // a new one, otherwise startScan answers SCAN_FAILED_ALREADY_STARTED.
         val start = Runnable {
             scanning = true
-            listener.onGlassesStatus("Scanning for MemoMind glasses…")
+            listener.onGlassesStatus("Recherche des lunettes MemoMind…")
             // Devices advertising the GM service are queued first; anything
             // else is only tried as a fallback, so a stray peripheral in range
             // cannot be picked instead of the glasses, yet glasses that omit
@@ -238,11 +238,11 @@ class GlassesHudClient(
                 scanner.startScan(null, settings, scanCallback)
             } catch (e: SecurityException) {
                 scanning = false
-                listener.onGlassesStatus("Bluetooth permission missing for scan.")
+                listener.onGlassesStatus("Autorisation Bluetooth manquante pour le scan.")
                 return@Runnable
             } catch (e: IllegalStateException) {
                 scanning = false
-                listener.onGlassesStatus("Glasses scan busy, retry.")
+                listener.onGlassesStatus("Scan des lunettes occupé, réessayez.")
                 return@Runnable
             }
             handler.postDelayed(scanTimeout, SCAN_TIMEOUT_MS)
@@ -265,14 +265,14 @@ class GlassesHudClient(
         if (scanned.isEmpty()) {
             val bonded = bondedDevices()
             if (bonded.isEmpty()) {
-                listener.onGlassesStatus("No MemoMind glasses found. Pair them in Settings, then retry.")
+                listener.onGlassesStatus("Aucune lunette MemoMind trouvée. Appairez-les dans les réglages, puis réessayez.")
                 return@Runnable
             }
-            listener.onGlassesStatus("No glasses announced themselves. Pick from the paired devices.")
+            listener.onGlassesStatus("Aucune lunette détectée. Choisissez parmi les appareils appairés.")
             listener.onGlassesChooser(bonded)
             return@Runnable
         }
-        listener.onGlassesStatus("Glasses not auto-detected. Pick them in the list.")
+        listener.onGlassesStatus("Lunettes non détectées automatiquement. Choisissez-les dans la liste.")
         listener.onGlassesChooser(mergeBonded(scanned))
     }
 
@@ -315,12 +315,12 @@ class GlassesHudClient(
     @SuppressLint("MissingPermission")
     fun connectToAddress(address: String) {
         val ad = adapter ?: run {
-            listener.onGlassesStatus("No Bluetooth adapter.")
+            listener.onGlassesStatus("Aucun adaptateur Bluetooth.")
             return
         }
         if (gatt != null || scanning) disconnect()
         val device = runCatching { ad.getRemoteDevice(address) }.getOrNull() ?: run {
-            listener.onGlassesStatus("Saved glasses $address unavailable; scanning instead.")
+            listener.onGlassesStatus("Lunettes enregistrées $address indisponibles ; nouvelle recherche.")
             prefs.edit().remove(PREF_GLASSES_ADDR).apply()
             connect()
             return
@@ -331,7 +331,7 @@ class GlassesHudClient(
         pickAddress = address
         val name = runCatching { device.name }.getOrNull() ?: address
         logDeviceTraits(device)
-        listener.onGlassesStatus("Connecting to $name…")
+        listener.onGlassesStatus("Connexion à $name…")
         // A device bonded as CLASSIC (or DUAL) is reached over the Classic SPP
         // command service; its BLE GATT server is not exposed, which is why a
         // LE link ended on "Link failed (status 147)".
@@ -351,11 +351,11 @@ class GlassesHudClient(
     private fun connectSpp(device: android.bluetooth.BluetoothDevice, name: String) {
         val ad = adapter
         if (ad == null) {
-            listener.onGlassesStatus("No Bluetooth adapter.")
+            listener.onGlassesStatus("Aucun adaptateur Bluetooth.")
             return
         }
         runCatching { ad.cancelDiscovery() }
-        listener.onGlassesStatus("Opening the Classic link to $name…")
+        listener.onGlassesStatus("Ouverture de la liaison Classic avec $name…")
         Thread {
             val sockets = listOf(
                 UUID.fromString(UUID_GM_SPP) to true,
@@ -386,8 +386,8 @@ class GlassesHudClient(
             }
             handler.post {
                 linking = false
-                listener.onGlassesStatus("Classic link failed: $lastError")
-                listener.onGlassesStatus("Trying Bluetooth LE instead…")
+                listener.onGlassesStatus("Liaison Classic échouée : $lastError")
+                listener.onGlassesStatus("Essai en Bluetooth LE…")
                 openGatt(device, android.bluetooth.BluetoothDevice.TRANSPORT_LE)
             }
         }.start()
@@ -409,9 +409,9 @@ class GlassesHudClient(
         if (cardioReady || !ready) return@Runnable
         textFallback = true
         listener.onGlassesStatus(
-            "No cardio plugin answered; testing the Web Bridge text channel."
+            "Aucun plugin cardio n'a répondu ; test du canal texte Web Bridge."
         )
-        listener.onGlassesStatus("Frames sent: $framesSent, uplinks seen: $uplinksSeen.")
+        listener.onGlassesStatus("Trames envoyées : $framesSent, remontées reçues : $uplinksSeen.")
         GmFrame.webBridgeText(
             eventId = nextEventId(),
             id = OBJECT_PROBE,
@@ -436,7 +436,7 @@ class GlassesHudClient(
         spp = socket
         sppOut = runCatching { socket.outputStream }.getOrNull()
         if (sppOut == null) {
-            listener.onGlassesStatus("Classic link has no output stream.")
+            listener.onGlassesStatus("La liaison Classic n'a pas de flux de sortie.")
             runCatching { socket.close() }
             spp = null
             linking = false
@@ -452,7 +452,7 @@ class GlassesHudClient(
         if (!addr.isNullOrBlank()) {
             prefs.edit().putString(PREF_GLASSES_ADDR, addr).apply()
         }
-        listener.onGlassesStatus("Glasses connected over Classic SPP.")
+        listener.onGlassesStatus("Lunettes connectées en Classic SPP.")
         startSppReader(socket)
         armPluginWait()
         writeRaw(byteArrayOf(0xFA.toByte(), 0x00, 0x00, 0x09, 0x01, 0x01, 0x01, 0x01, 0x06))
@@ -520,7 +520,7 @@ class GlassesHudClient(
         handler.removeCallbacks(cardioFlush)
         // A saved address that fails later is kept: the glasses may simply be
         // out of range, and re-picking them on every start would be noise.
-        listener.onGlassesStatus("Glasses link lost.")
+        listener.onGlassesStatus("Liaison des lunettes perdue.")
         listener.onGlassesDisconnected()
     }
 
@@ -563,8 +563,8 @@ class GlassesHudClient(
             android.bluetooth.BluetoothDevice.BOND_BONDING -> "bonding"
             else -> "not bonded"
         }
-        listener.onGlassesStatus("Link target ${d.address} ($type, $bond).")
-        if (sppPresent) listener.onGlassesStatus("The phone records an SPP service for it.")
+        listener.onGlassesStatus("Cible de liaison ${d.address} ($type, $bond).")
+        if (sppPresent) listener.onGlassesStatus("Le téléphone voit un service SPP pour cet appareil.")
         Log.d(tag, "target ${d.address} type=$type bond=$bond spp=$sppPresent")
     }
 
@@ -601,7 +601,7 @@ class GlassesHudClient(
                 val name = runCatching { device.name }.getOrNull() ?: device.address
                 if (gm) {
                     gmCandidates.add(device to name)
-                    listener.onGlassesStatus("Maybe glasses: $name (advertises GM)")
+                    listener.onGlassesStatus("Lunettes possibles : $name (annonce GM)")
                 } else {
                     candidates.add(device to name)
                     Log.d(tag, "candidate ${device.address} (no GM service, fallback)")
@@ -617,7 +617,7 @@ class GlassesHudClient(
 
         override fun onScanFailed(errorCode: Int) {
             scanning = false
-            listener.onGlassesStatus("Glasses scan failed (code $errorCode).")
+            listener.onGlassesStatus("Scan des lunettes échoué (code $errorCode).")
         }
     }
 
@@ -644,16 +644,16 @@ class GlassesHudClient(
             // the next Connect scans afresh and offers the picker again.
             if (prefs.contains(PREF_GLASSES_ADDR) && candidates.isEmpty() && gmCandidates.isEmpty()) {
                 prefs.edit().remove(PREF_GLASSES_ADDR).apply()
-                listener.onGlassesStatus("Saved glasses did not answer; they have been forgotten. Tap Connect to scan again.")
+                listener.onGlassesStatus("Les lunettes enregistrées n'ont pas répondu ; elles ont été oubliées. Appuyez sur Connecter pour relancer le scan.")
                 return
             }
-            listener.onGlassesStatus("No MemoMind glasses answered. Retry with them awake.")
+            listener.onGlassesStatus("Aucune lunette MemoMind n'a répondu. Réessayez en les réveillant.")
             return
         }
         linking = true
         linkCandidate = index
         val (device, name) = list[index]
-        listener.onGlassesStatus("Found $name. Connecting…")
+        listener.onGlassesStatus("$name trouvées. Connexion…")
         pickAddress = device.address
         openGatt(device, android.bluetooth.BluetoothDevice.TRANSPORT_LE)
     }
@@ -666,7 +666,7 @@ class GlassesHudClient(
         val device = runCatching { ad.getRemoteDevice(addr) }.getOrNull() ?: return
         linking = true
         linkCandidate = 0
-        listener.onGlassesStatus("Retrying with the system transport…")
+        listener.onGlassesStatus("Nouvelle tentative via le transport système…")
         openGatt(device, android.bluetooth.BluetoothDevice.TRANSPORT_AUTO)
     }
 
@@ -686,7 +686,7 @@ class GlassesHudClient(
                 BluetoothProfile.STATE_CONNECTED -> {
                     linkUp = true
                     // status 133 can still accompany a usable link; keep going.
-                    listener.onGlassesStatus("Glasses connected. Discovering services…")
+                    listener.onGlassesStatus("Lunettes connectées. Découverte des services…")
                     g.requestMtu(185)
                     g.discoverServices()
                 }
@@ -698,7 +698,7 @@ class GlassesHudClient(
                     g.close()
                     gatt = null
                     val failed = status != BluetoothGatt.GATT_SUCCESS && !linkUp
-                    if (failed) listener.onGlassesStatus("Link failed (status $status).")
+                    if (failed) listener.onGlassesStatus("Liaison échouée (statut $status).")
                     if (linking) {
                         linking = false
                         // A dual-mode bonded device may refuse TRANSPORT_LE
@@ -713,7 +713,7 @@ class GlassesHudClient(
                         tryCandidate(linkCandidate + 1)
                         return
                     }
-                    listener.onGlassesStatus("Glasses disconnected.")
+                    listener.onGlassesStatus("Lunettes déconnectées.")
                     if (advertisedServices.isNotEmpty()) {
                         listener.onGlassesStatus("Services: ${advertisedServices.joinToString(", ")}")
                     }
@@ -738,7 +738,7 @@ class GlassesHudClient(
             advertisedServices.clear()
             for (service in g.services) advertisedServices.add(uuidText(service.uuid))
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                listener.onGlassesStatus("Service discovery failed (status $status).")
+                listener.onGlassesStatus("Découverte des services échouée (statut $status).")
             }
             for (service in g.services) {
                 Log.d(tag, "service ${uuidText(service.uuid)}")
@@ -755,7 +755,7 @@ class GlassesHudClient(
                 // actually exposes, then try the next scanned candidate.
                 val summary = g.services.joinToString(", ") { uuidText(it.uuid) }
                 Log.w(tag, "0x2021 missing; services=[$summary]")
-                listener.onGlassesStatus("GM control characteristic 0x2021 not found.")
+                listener.onGlassesStatus("Caractéristique de contrôle GM 0x2021 introuvable.")
                 if (summary.isNotBlank()) listener.onGlassesStatus("Services: $summary")
                 linking = false
                 runCatching { g.disconnect() }
@@ -766,7 +766,7 @@ class GlassesHudClient(
                     pickAddress = null
                     val bonded = bondedDevices()
                     if (bonded.isNotEmpty()) {
-                        listener.onGlassesStatus("That device is not the glasses. Pick another one.")
+                        listener.onGlassesStatus("Cet appareil n'est pas celui des lunettes. Choisissez-en un autre.")
                         listener.onGlassesChooser(bonded)
                         return
                     }
@@ -775,7 +775,7 @@ class GlassesHudClient(
                 return
             }
             if (notify == null) {
-                listener.onGlassesStatus("GM uplink characteristic 0x2022 not found.")
+                listener.onGlassesStatus("Caractéristique de remontée GM 0x2022 introuvable.")
             }
             linking = false
             candidates.clear()
@@ -859,7 +859,7 @@ class GlassesHudClient(
         Log.d(tag, "uplink #$uplinksSeen head=$head svc=$service cmd=$command size=${frame.size}")
         // Show the first few unusual uplinks so the journal explains silence.
         if (uplinksSeen <= 8 && (head != GmFrame.FRAME_HEAD_FIRST || service != GmFrame.SERVICE_PLUGIN)) {
-            listener.onGlassesStatus("Uplink #$uplinksSeen: head=$head svc=$service cmd=$command")
+            listener.onGlassesStatus("Remontée #$uplinksSeen : head=$head svc=$service cmd=$command")
         }
         if (head != GmFrame.FRAME_HEAD_FIRST) return
         if (service != GmFrame.SERVICE_PLUGIN) return
@@ -900,7 +900,7 @@ class GlassesHudClient(
             if (!cardioReady) {
                 cardioReady = true
                 lastCardioBpm = 0
-                listener.onGlassesStatus("Glasses cardio plugin ready.")
+                listener.onGlassesStatus("Plugin cardio des lunettes prêt.")
                 listener.onCardioReady()
             }
             return

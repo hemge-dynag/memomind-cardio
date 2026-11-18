@@ -9,10 +9,16 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.13 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.14 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.14** (UI redesign + French):
+> - New dark cardio design: hero heart-rate card with a live zone chip, a
+>   distance / speed / time / average metrics card, pill-style action buttons
+>   and a framed log panel.
+> - The whole interface is now in French (labels, dialogs, status log).
 >
 > **1.2.13** (glasses HUD rework):
 > - The Android app now streams `TRACKING` (command 4) so the glasses show the

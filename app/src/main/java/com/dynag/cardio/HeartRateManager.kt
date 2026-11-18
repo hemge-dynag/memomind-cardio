@@ -160,16 +160,16 @@ class HeartRateManager(
     fun scanForSensors(scanMillis: Long = 10000) {
         val ad = adapter
         if (ad == null) {
-            listener.onSensorError("This device has no Bluetooth adapter.")
+            listener.onSensorError("Cet appareil n'a pas d'adaptateur Bluetooth.")
             return
         }
         if (!ad.isEnabled) {
-            listener.onSensorError("Bluetooth is off. Please enable it.")
+            listener.onSensorError("Bluetooth désactivé. Veuillez l'activer.")
             return
         }
         val scanner = ad.bluetoothLeScanner
         if (scanner == null) {
-            listener.onSensorError("BLE scanner unavailable.")
+            listener.onSensorError("Scanner BLE indisponible.")
             return
         }
         // Calling startScan while a scan is already running makes the platform
@@ -198,11 +198,11 @@ class HeartRateManager(
             scanner.startScan(null, settings, scanCallback)
         } catch (e: SecurityException) {
             scanning = false
-            listener.onSensorError("Bluetooth permission missing for scan.")
+            listener.onSensorError("Autorisation Bluetooth manquante pour le scan.")
             return
         } catch (e: IllegalStateException) {
             scanning = false
-            listener.onSensorError("Could not start scan: ${e.message ?: "already running"}.")
+            listener.onSensorError("Impossible de lancer le scan : ${e.message ?: "déjà en cours"}.")
             return
         }
         val stop = Runnable { finishScan() }
@@ -222,7 +222,7 @@ class HeartRateManager(
             compareByDescending<BleSensor> { it.hrServiceAdvertised }
                 .thenByDescending { it.rssi }
         )
-        listener.onSensorStatus("Scan finished: ${sensors.size} device(s).")
+        listener.onSensorStatus("Scan terminé : ${sensors.size} appareil(s).")
         listener.onSensorsDiscovered(sensors)
     }
 
@@ -265,7 +265,7 @@ class HeartRateManager(
                 5 -> "too many scans"
                 else -> "code $errorCode"
             }
-            listener.onSensorError("Scan failed ($reason). Tap Scan again.")
+            listener.onSensorError("Scan échoué ($reason). Relancez le scan.")
         }
     }
 
@@ -273,7 +273,7 @@ class HeartRateManager(
     @SuppressLint("MissingPermission")
     fun connect(sensor: BleSensor) {
         val ad = adapter ?: run {
-            listener.onSensorError("No Bluetooth adapter.")
+            listener.onSensorError("Aucun adaptateur Bluetooth.")
             return
         }
         if (scanning) {
@@ -281,7 +281,7 @@ class HeartRateManager(
             ad.bluetoothLeScanner?.stopScan(scanCallback)
         }
         remember(sensor)
-        listener.onSensorStatus("Connecting to ${sensor.name.ifBlank { sensor.address }}…")
+        listener.onSensorStatus("Connexion à ${sensor.name.ifBlank { sensor.address }}…")
         // Prefer the handle kept from the scan: `getRemoteDevice` gave the old
         // manager an address string that connected fine, but reusing the scanned
         // object also keeps the address type (public/random) the peripheral
@@ -301,11 +301,11 @@ class HeartRateManager(
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     if (status != BluetoothGatt.GATT_SUCCESS) {
-                        listener.onSensorError("Connection failed (status $status).")
+                        listener.onSensorError("Connexion échouée (statut $status).")
                         runCatching { g.disconnect() }
                         return
                     }
-                    listener.onSensorStatus("Connected. Discovering services…")
+                    listener.onSensorStatus("Connecté. Découverte des services…")
                     g.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -322,7 +322,7 @@ class HeartRateManager(
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             val ch = g.getService(hrServiceUuid)?.getCharacteristic(hrMeasurementUuid)
             if (ch == null) {
-                listener.onSensorError("No Heart Rate service on this device.")
+                listener.onSensorError("Aucun service de fréquence cardiaque sur cet appareil.")
                 connected = false
                 g.disconnect()
                 return
@@ -359,7 +359,7 @@ class HeartRateManager(
             if (!notificationsPending) return
             notificationsPending = false
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                listener.onSensorError("Could not enable heart-rate notifications (status $status).")
+                listener.onSensorError("Impossible d'activer les notifications cardiaques (statut $status).")
                 return
             }
             connected = true

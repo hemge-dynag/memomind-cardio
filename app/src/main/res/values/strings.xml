@@ -1,4 +1,56 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">MemoMind Cardio</string>
+
+    <string name="bpm_unit">BPM</string>
+    <string name="bpm_placeholder">--</string>
+    <string name="bpm_caption">Fréquence cardiaque</string>
+    <string name="zone_caption">Zone d\'effort</string>
+
+    <string name="metrics_title">Entraînement</string>
+    <string name="distance_label">Distance</string>
+    <string name="speed_label">Vitesse</string>
+    <string name="elapsed_label">Durée</string>
+    <string name="average_label">Moyenne</string>
+
+    <string name="distance_placeholder">0,00 km</string>
+    <string name="speed_placeholder">0,0 km/h</string>
+    <string name="time_placeholder">0:00</string>
+    <string name="average_placeholder">0,0 km/h</string>
+
+    <string name="btn_sensor">Chercher un capteur cardiaque</string>
+    <string name="btn_sensor_connected">Déconnecter le capteur</string>
+    <string name="btn_glasses">Connecter les lunettes</string>
+    <string name="btn_track">Démarrer le suivi</string>
+    <string name="btn_track_stop">Arrêter le suivi</string>
+    <string name="btn_push">Afficher sur les lunettes</string>
+    <string name="btn_copy_log">Copier le journal</string>
+
+    <string name="section_devices">Appareils</string>
+    <string name="section_log">Journal</string>
+
+    <string name="status_glasses_idle">Lunettes : non connectées</string>
+    <string name="status_track_idle">Suivi : arrêté</string>
+
+    <string name="dialog_choose_sensor">Choisir la source cardiaque</string>
+    <string name="dialog_choose_glasses">Quel appareil est celui des lunettes ?</string>
+    <string name="dialog_cancel">Annuler</string>
+
+    <string name="msg_permissions_required">Les autorisations Bluetooth et localisation sont nécessaires.</string>
+    <string name="msg_sensor_released">Capteur cardiaque libéré.</string>
+    <string name="msg_no_device_found">Aucun appareil trouvé. Réveillez le capteur ou lancez le partage de fréquence, puis réessayez.</string>
+    <string name="msg_sensor_ready">Capteur cardiaque prêt. En attente du premier battement…</string>
+    <string name="msg_sensor_disconnected">Capteur cardiaque déconnecté.</string>
+    <string name="msg_first_beat">Première mesure de fréquence reçue.</string>
+    <string name="msg_pushed">Mesures actuelles envoyées aux lunettes.</string>
+    <string name="msg_log_copied">Journal copié dans le presse-papiers.</string>
+    <string name="msg_glasses_ready">Lunettes prêtes. Envoi en direct activé.</string>
+    <string name="msg_cardio_ready">Plugin cardio des lunettes prêt. Affichage sur le HUD.</string>
+    <string name="msg_forgot_sensor">Capteur enregistré oublié. Nouvelle recherche…</string>
+    <string name="msg_track_started">Suivi démarré (GPS).</string>
+
+    <string name="reconnecting_sensor">Reconnexion à %1$s…</string>
+    <string name="saved_sensor_missing">Capteur enregistré introuvable ; recherche d\'un nouveau capteur.</string>
+    <string name="saved_sensor_unreachable">Capteur enregistré injoignable ; recherche d\'un nouveau capteur.</string>
+    <string name="reconnecting_saved">Capteur enregistré injoignable ; nouvelle recherche.</string>
 </resources>

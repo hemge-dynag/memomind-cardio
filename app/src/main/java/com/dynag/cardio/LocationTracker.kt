@@ -58,17 +58,17 @@ class LocationTracker(
     fun start() {
         val lm = locationManager
         if (lm == null) {
-            listener.onLocationStatus("Location service unavailable.")
+            listener.onLocationStatus("Service de localisation indisponible.")
             return
         }
         val gpsEnabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
         if (!gpsEnabled) {
-            listener.onLocationStatus("GPS is off. Please enable location.")
+            listener.onLocationStatus("GPS désactivé. Veuillez activer la localisation.")
             return
         }
         reset()
         running = true
-        listener.onLocationStatus("Tracking started (GPS).")
+        listener.onLocationStatus("Suivi démarré (GPS).")
         try {
             lm.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
@@ -80,7 +80,7 @@ class LocationTracker(
         } catch (e: Exception) {
             running = false
             Log.w(tag, "requestLocationUpdates failed", e)
-            listener.onLocationStatus("Could not start GPS: ${e.message}")
+            listener.onLocationStatus("Impossible de démarrer le GPS : ${e.message}")
         }
     }
 
@@ -93,7 +93,7 @@ class LocationTracker(
         } catch (e: Exception) {
             Log.w(tag, "removeUpdates failed", e)
         }
-        listener.onLocationStatus("Tracking stopped.")
+        listener.onLocationStatus("Suivi arrêté.")
         emit(0f)
     }
 
@@ -132,7 +132,7 @@ class LocationTracker(
         override fun onProviderEnabled(provider: String) {}
 
         override fun onProviderDisabled(provider: String) {
-            listener.onLocationStatus("GPS turned off.")
+            listener.onLocationStatus("GPS désactivé.")
             stop()
         }
     }

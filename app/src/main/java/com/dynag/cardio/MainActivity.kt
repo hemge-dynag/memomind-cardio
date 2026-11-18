@@ -45,6 +45,9 @@ class MainActivity : AppCompatActivity(),
     private lateinit var distText: TextView
     private lateinit var speedText: TextView
     private lateinit var timeText: TextView
+    private lateinit var avgText: TextView
+    private lateinit var zoneText: TextView
+    private lateinit var subtitleText: TextView
     private lateinit var statusText: TextView
     private lateinit var btnSensor: Button
     private lateinit var btnGlasses: Button
@@ -89,7 +92,7 @@ class MainActivity : AppCompatActivity(),
         if (result.values.all { it }) {
             onPermissionsGranted()
         } else {
-            toast("Bluetooth and location permissions are required.")
+            toast(getString(R.string.msg_permissions_required))
         }
     }
 
@@ -101,6 +104,9 @@ class MainActivity : AppCompatActivity(),
         distText = findViewById(R.id.distText)
         speedText = findViewById(R.id.speedText)
         timeText = findViewById(R.id.timeText)
+        avgText = findViewById(R.id.avgText)
+        zoneText = findViewById(R.id.zoneText)
+        subtitleText = findViewById(R.id.subtitleText)
         statusText = findViewById(R.id.statusText)
         btnSensor = findViewById(R.id.btnSensor)
         btnGlasses = findViewById(R.id.btnGlasses)
@@ -116,7 +122,7 @@ class MainActivity : AppCompatActivity(),
             ensurePermissions {
                 if (heartRate.isConnected) {
                     heartRate.stop()
-                    appendStatus("Heart-rate sensor released.")
+                    appendStatus(getString(R.string.msg_sensor_released))
                 } else {
                     // Reconnect to the remembered sensor first; only scan when
                     // none is saved. Long-press to forget and re-discover.
@@ -124,7 +130,10 @@ class MainActivity : AppCompatActivity(),
                     if (heartRate.connectSaved()) {
                         reconnectingSaved = true
                         appendStatus(
-                            "Reconnecting to ${saved?.name?.ifBlank { saved.address } ?: "sensor"}…"
+                            getString(
+                                R.string.reconnecting_sensor,
+                                saved?.name?.ifBlank { saved.address } ?: "capteur"
+                            )
                         )
                     } else {
                         heartRate.scanForSensors()
@@ -136,7 +145,7 @@ class MainActivity : AppCompatActivity(),
             ensurePermissions {
                 heartRate.stop()
                 heartRate.forgetSaved()
-                appendStatus("Forgot saved sensor. Scanning again…")
+                appendStatus(getString(R.string.msg_forgot_sensor))
                 heartRate.scanForSensors()
             }
             true
@@ -149,21 +158,21 @@ class MainActivity : AppCompatActivity(),
                 if (location.isRunning) {
                     location.stop()
                     glasses.sendCardioTracking(false, 0L, 0.0, 0.0)
-                    btnTrack.text = "Start tracking"
+                    btnTrack.text = getString(R.string.btn_track)
                 } else {
                     location.start()
-                    btnTrack.text = "Stop tracking"
+                    btnTrack.text = getString(R.string.btn_track_stop)
                 }
             }
         }
         btnPush.setOnClickListener {
             pushMetrics()
-            appendStatus("Pushed current metrics to glasses.")
+            appendStatus(getString(R.string.msg_pushed))
         }
         btnCopyLog.setOnClickListener {
             val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("Cardio log", statusText.text))
-            appendStatus("Log copied to clipboard.")
+            appendStatus(getString(R.string.msg_log_copied))
         }
     }
 
@@ -216,7 +225,7 @@ class MainActivity : AppCompatActivity(),
     override fun onSensorsDiscovered(sensors: List<BleSensor>) {
         runOnUiThread {
             if (sensors.isEmpty()) {
-                appendStatus("No device found. Wake the sensor or start HR sharing, then retry.")
+                appendStatus(getString(R.string.msg_no_device_found))
                 return@runOnUiThread
             }
             if (sensors.size == 1) {
@@ -225,9 +234,9 @@ class MainActivity : AppCompatActivity(),
             }
             val labels = sensors.map { it.displayName }.toTypedArray()
             AlertDialog.Builder(this)
-                .setTitle("Choose heart-rate source")
+                .setTitle(R.string.dialog_choose_sensor)
                 .setItems(labels) { _, which -> heartRate.connect(sensors[which]) }
-                .setNegativeButton("Cancel", null)
+                .setNegativeButton(R.string.dialog_cancel, null)
                 .show()
         }
     }
@@ -236,7 +245,7 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             reconnectingSaved = false
             sensorReady = true
-            appendStatus("Heart-rate sensor ready. Waiting for the first beat…")
+            appendStatus(getString(R.string.msg_sensor_ready))
             glasses.sendCardioConfig(restingBpm, maxBpm)
             // CONNECTING until a real measurement lands: a strap that reports
             // "ready" but never sends a beat used to leave the glasses on a
@@ -249,14 +258,15 @@ class MainActivity : AppCompatActivity(),
     override fun onSensorDisconnected() {
         runOnUiThread {
             sensorReady = false
+            subtitleText.text = "Capteur inactif"
             if (reconnectingSaved) {
                 reconnectingSaved = false
-                appendStatus("Saved sensor not found; scanning instead.")
+                appendStatus(getString(R.string.saved_sensor_missing))
                 heartRate.forgetSaved()
                 ensurePermissions { heartRate.scanForSensors() }
                 return@runOnUiThread
             }
-            appendStatus("Heart-rate sensor disconnected.")
+            appendStatus(getString(R.string.msg_sensor_disconnected))
             glasses.sendCardioStatus(STATE_IDLE)
         }
     }
@@ -268,7 +278,7 @@ class MainActivity : AppCompatActivity(),
                 // The remembered sensor could not be reached (moved, paired
                 // elsewhere, powered off). Forget it and fall back to a scan.
                 reconnectingSaved = false
-                appendStatus("Saved sensor unreachable; scanning instead.")
+                appendStatus(getString(R.string.saved_sensor_unreachable))
                 heartRate.forgetSaved()
                 ensurePermissions { heartRate.scanForSensors() }
                 return@runOnUiThread
@@ -289,7 +299,9 @@ class MainActivity : AppCompatActivity(),
         if (firstBeat && pushEnabled) glasses.sendCardioStatus(STATE_READING)
         runOnUiThread {
             bpmText.text = bpm.toString()
-            if (firstBeat) appendStatus("First heart-rate reading received.")
+            updateZone(bpm)
+            subtitleText.text = "Capteur connecté"
+            if (firstBeat) appendStatus(getString(R.string.msg_first_beat))
             if (pushEnabled && sensorReady) pushMetrics()
         }
     }
@@ -311,12 +323,11 @@ class MainActivity : AppCompatActivity(),
         lastAverageKmh = averageSpeedMps * 3.6
         lastElapsedMs = elapsedMillis
         runOnUiThread {
-            distText.text = String.format(Locale.US, "%.2f km", distanceMeters / 1000.0)
-            speedText.text = String.format(Locale.US, "%.1f km/h", lastSpeedKmh)
+            distText.text = formatDistance(distanceMeters)
+            speedText.text = formatSpeed(lastSpeedKmh)
             val totalSec = elapsedMillis / 1000
-            timeText.text = String.format(
-                Locale.US, "%d:%02d · %.1f km/h avg", totalSec / 60, totalSec % 60, lastAverageKmh
-            )
+            timeText.text = String.format(Locale.US, "%d:%02d", totalSec / 60, totalSec % 60)
+            avgText.text = formatSpeed(lastAverageKmh)
             if (pushEnabled && sensorReady) pushMetrics()
         }
     }
@@ -331,7 +342,7 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             pushEnabled = true
             btnPush.isEnabled = true
-            appendStatus("Glasses ready. Live push enabled.")
+            appendStatus(getString(R.string.msg_glasses_ready))
             // The cardio plugin announces EVENT_READY on its own (shortly after
             // the connection event); onCardioReady() sends the config then.
         }
@@ -348,7 +359,7 @@ class MainActivity : AppCompatActivity(),
         runOnUiThread {
             glasses.sendCardioConfig(restingBpm, maxBpm)
             glasses.sendCardioStatus(if (sensorReady) STATE_READING else STATE_CONNECTING)
-            appendStatus("Cardio plugin on glasses ready. Streaming to the HUD.")
+            appendStatus(getString(R.string.msg_cardio_ready))
         }
     }
 
@@ -360,13 +371,13 @@ class MainActivity : AppCompatActivity(),
             if (chooserDialog?.isShowing == true) return@runOnUiThread
             val labels = devices.map { (addr, name) -> "$name\n$addr" }.toTypedArray()
             val dialog = AlertDialog.Builder(this)
-                .setTitle("Which device is the glasses?")
+                .setTitle(R.string.dialog_choose_glasses)
                 .setItems(labels) { _, which ->
                     val (addr, name) = devices[which]
-                    appendStatus("Selected $name ($addr).")
+                    appendStatus("Appareil sélectionné : $name ($addr).")
                     glasses.connectToAddress(addr)
                 }
-                .setNegativeButton("Cancel") { _, _ -> glasses.cancelChooser() }
+                .setNegativeButton(R.string.dialog_cancel) { _, _ -> glasses.cancelChooser() }
                 .setOnCancelListener { glasses.cancelChooser() }
                 .create()
             chooserDialog = dialog
@@ -375,6 +386,36 @@ class MainActivity : AppCompatActivity(),
     }
 
     // -------------------------------------------------------------------
+
+    private fun formatDistance(meters: Double): String =
+        if (meters >= 1000.0) {
+            String.format(Locale.getDefault(), "%.2f km", meters / 1000.0)
+        } else {
+            String.format(Locale.getDefault(), "%.0f m", meters)
+        }
+
+    private fun formatSpeed(kmh: Double): String =
+        String.format(Locale.getDefault(), "%.1f km/h", kmh)
+
+    /** Karvonen zone label, mirroring the glasses (see GmFrame.cardioZone). */
+    private fun updateZone(bpm: Int) {
+        if (bpm <= 0) {
+            zoneText.text = getString(R.string.zone_caption)
+            return
+        }
+        when (GmFrame.cardioZone(bpm, restingBpm, maxBpm)) {
+            1 -> setZone("Repos", R.color.text_secondary)
+            2 -> setZone("Modérée", R.color.ok)
+            3 -> setZone("Effort", R.color.warn)
+            4 -> setZone("Maximum", R.color.bad)
+            else -> setZone("Zone inconnue", R.color.text_secondary)
+        }
+    }
+
+    private fun setZone(label: String, colorRes: Int) {
+        zoneText.text = label
+        zoneText.setTextColor(ContextCompat.getColor(this, colorRes))
+    }
 
     private fun appendStatus(line: String) {
         statusText.append(line + "\n")
