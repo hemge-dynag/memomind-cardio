@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -54,6 +55,9 @@ class MainActivity : AppCompatActivity(),
     private lateinit var btnTrack: Button
     private lateinit var btnPush: Button
     private lateinit var btnCopyLog: Button
+    private lateinit var logHeader: View
+    private lateinit var logToggle: TextView
+    private lateinit var logPanel: View
 
     private lateinit var heartRate: HeartRateManager
     private lateinit var location: LocationTracker
@@ -113,6 +117,12 @@ class MainActivity : AppCompatActivity(),
         btnTrack = findViewById(R.id.btnTrack)
         btnPush = findViewById(R.id.btnPush)
         btnCopyLog = findViewById(R.id.btnCopyLog)
+        logHeader = findViewById(R.id.logHeader)
+        logToggle = findViewById(R.id.logToggle)
+        logPanel = findViewById(R.id.logPanel)
+
+        logHeader.setOnClickListener { toggleLog() }
+        logToggle.setOnClickListener { toggleLog() }
 
         heartRate = HeartRateManager(this, this)
         location = LocationTracker(this, this)
@@ -174,6 +184,12 @@ class MainActivity : AppCompatActivity(),
             clipboard.setPrimaryClip(ClipData.newPlainText("Cardio log", statusText.text))
             appendStatus(getString(R.string.msg_log_copied))
         }
+    }
+
+    private fun toggleLog() {
+        val show = logPanel.visibility != View.VISIBLE
+        logPanel.visibility = if (show) View.VISIBLE else View.GONE
+        logToggle.setText(if (show) R.string.log_hide else R.string.log_show)
     }
 
     private fun requiredPermissions(): Array<String> {

@@ -28,6 +28,8 @@
 
     <string name="section_devices">Appareils</string>
     <string name="section_log">Journal</string>
+    <string name="log_show">Afficher</string>
+    <string name="log_hide">Masquer</string>
 
     <string name="status_glasses_idle">Lunettes : non connectées</string>
     <string name="status_track_idle">Suivi : arrêté</string>

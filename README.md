@@ -14,6 +14,11 @@ Android app running outside the plugin model — which is what this is.
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
 >
+> **1.2.15** (collapsible log):
+> - The status log is now hidden by default; tap the "Journal" header (or its
+>   "Afficher / Masquer" label) to expand or collapse it. The copy-log button
+>   lives inside the panel.
+>
 > **1.2.14** (UI redesign + French):
 > - New dark cardio design: hero heart-rate card with a live zone chip, a
 >   distance / speed / time / average metrics card, pill-style action buttons
