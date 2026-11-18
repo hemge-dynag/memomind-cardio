@@ -981,6 +981,17 @@ class GlassesHudClient(
         sendCardioPayload(GmFrame.cardioStatus(state))
     }
 
+    /**
+     * Report the tracking metrics to the plugin (command 4). With [active]
+     * false the glasses drop the metrics line; the values are ignored then.
+     */
+    fun sendCardioTracking(active: Boolean, elapsedMillis: Long, speedKmh: Double, distanceMeters: Double) {
+        if (!cardioReady) return
+        sendCardioPayload(
+            GmFrame.cardioTracking(active, elapsedMillis / 1000, speedKmh, distanceMeters)
+        )
+    }
+
     /** True once the plugin missed its greeting and text drawing took over. */
     val usingTextFallback: Boolean get() = textFallback
 

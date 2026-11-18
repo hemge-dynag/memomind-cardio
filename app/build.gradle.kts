@@ -11,8 +11,8 @@ android {
         applicationId = "com.dynag.cardio"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.2.10"
+        versionCode = 16
+        versionName = "1.2.13"
     }
 
     buildTypes {

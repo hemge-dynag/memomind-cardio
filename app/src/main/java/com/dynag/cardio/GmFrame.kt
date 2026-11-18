@@ -285,6 +285,36 @@ object GmFrame {
     )
 
     /**
+     * Cardio protocol version 1, command TRACKING (4).
+     *
+     * Payload: `version, 4, flags, time_s (4 LE), speed_0.1km/h (2 LE),
+     * distance_m (4 LE)`.
+     * `flags` bit 0 = tracking active. When clear the remaining fields are
+     * still sent (zeros) so the glasses hide the metrics line.
+     */
+    fun cardioTracking(active: Boolean, elapsedSec: Long, speedKmh: Double, distanceMeters: Double): ByteArray {
+        val flags = if (active) 1 else 0
+        val sec = elapsedSec.coerceIn(0L, 0xFFFFFFFFL)
+        val dkmh = (speedKmh * 10.0).toLong().coerceIn(0L, 65535L)
+        val dist = distanceMeters.toLong().coerceIn(0L, 0xFFFFFFFFL)
+        return byteArrayOf(
+            1,
+            4,
+            flags.toByte(),
+            (sec and 0xFF).toByte(),
+            ((sec ushr 8) and 0xFF).toByte(),
+            ((sec ushr 16) and 0xFF).toByte(),
+            ((sec ushr 24) and 0xFF).toByte(),
+            (dkmh and 0xFF).toByte(),
+            ((dkmh ushr 8) and 0xFF).toByte(),
+            (dist and 0xFF).toByte(),
+            ((dist ushr 8) and 0xFF).toByte(),
+            ((dist ushr 16) and 0xFF).toByte(),
+            ((dist ushr 24) and 0xFF).toByte()
+        )
+    }
+
+    /**
      * Karvonen-style band used by the glasses (see `compute_zone()` in
      * `cardio.c`): 0 none, 1 rest, 2 moderate, 3 effort, 4 maximum.
      */

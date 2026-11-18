@@ -148,6 +148,7 @@ class MainActivity : AppCompatActivity(),
             ensurePermissions {
                 if (location.isRunning) {
                     location.stop()
+                    glasses.sendCardioTracking(false, 0L, 0.0, 0.0)
                     btnTrack.text = "Start tracking"
                 } else {
                     location.start()
@@ -201,6 +202,9 @@ class MainActivity : AppCompatActivity(),
     private fun pushMetrics() {
         if (!pushEnabled) return
         glasses.showMetrics(lastBpm, lastDistance, lastSpeedKmh, lastAverageKmh, lastElapsedMs)
+        glasses.sendCardioTracking(
+            location.isRunning, lastElapsedMs, lastSpeedKmh, lastDistance
+        )
     }
 
     // ---- HeartRateManager.Listener ------------------------------------
@@ -384,6 +388,7 @@ class MainActivity : AppCompatActivity(),
         super.onDestroy()
         heartRate.stop()
         location.stop()
+        glasses.sendCardioTracking(false, 0L, 0.0, 0.0)
         glasses.disconnect()
     }
 }

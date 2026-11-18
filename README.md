@@ -9,10 +9,27 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.10 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.13 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.13** (glasses HUD rework):
+> - The Android app now streams `TRACKING` (command 4) so the glasses show the
+>   workout time, speed and distance under the BPM, and hide that line when
+>   tracking is off.
+> - Requires glasses plugin `cardio.gmp` v2 or newer.
+>
+> **1.2.12** (icon restyle):
+> - Icon now shows a red heart wearing eyeglasses (white frames) instead of the
+>   ECG pulse line.
+>
+> **1.2.11** (app icon):
+> - Added a proper launcher icon: a red heart crossed by a white ECG pulse on a
+>   dark gradient, with adaptive-icon (foreground/background) layers and a round
+>   variant for every density (mdpi → xxxhdpi).
+> - Previously the app had no `android:icon`, so Android showed the default
+>   placeholder.
 >
 > **1.2.10 fixes** (remember the heart sensor for faster reconnection):
 > - The chosen heart-rate sensor (address + name) is saved in
@@ -137,9 +154,11 @@ Android app running outside the plugin model — which is what this is.
      - `STATUS` `[1, 2, state]` — idle / connecting / reading / lost / error
      - `HEART_RATE` `[1, 1, bpm_lo, bpm_hi, zone, contactBad, trend]`, throttled
        to one payload every 250 ms
+     - `TRACKING` `[1, 4, flags, time_s:u32le, speed_0.1kmh:u16le, distance_m:u32le]`
+       — `flags` bit 0 = tracking active; sent with zeros when tracking stops
 
-     The glasses render the big BPM, the zone label and their own 30-second
-     trend line, so nothing else has to be drawn.
+     The glasses render the big BPM, the unit, the zone label and (while
+     tracking) a time / speed / distance line, so nothing else has to be drawn.
    - **Web Bridge text channel** (service `0x0F`, command `0x28`, channel `2`)
      as a fallback for when no cardio plugin is running: three text objects
      (heart rate, distance + speed, time + average speed) pushed by the
@@ -209,7 +228,7 @@ The glasses side follows the public MemoMind protocols (no vendor SDK):
 - **Cardio plugin protocol v1** — `GlassSDK/examples/cardio/cardio.c` and
   `PhoneSDK/examples/cardio/protocol.js`. Downlink channel `0x4344` (`'CD'`),
   upstream channel `0x4355` (`'CU'`). Commands: `HEART_RATE (1)`,
-  `STATUS (2)`, `CONFIG (3)`; event `READY (1)`; states `IDLE 0`,
+  `STATUS (2)`, `CONFIG (3)`, `TRACKING (4)`; event `READY (1)`; states `IDLE 0`,
   `CONNECTING 1`, `READING 2`, `LOST 3`, `ERROR 4`; zones
   `NONE 0`, `REST 1`, `MODERATE 2`, `EFFORT 3`, `MAXIMUM 4`.
 - **Web Bridge text channel `2`** — `GlassSDK/docs/HUD_PROTOCOL.md`. Payload:
