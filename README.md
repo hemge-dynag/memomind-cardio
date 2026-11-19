@@ -317,3 +317,18 @@ Signed release APK: `apk/memomind-cardio-1.2.17.apk`
 The F-Droid index for this APK is published from the separate repository
 [`hemge-dynag/fdroid`](https://github.com/hemge-dynag/fdroid) (fdroidserver
 configuration + signing key, metadata under `metadata/`).
+
+Repository URL to add in F-Droid > Settings > Repositories:
+
+```
+https://hemge-dynag.github.io/fdroid/fdroid/repo
+```
+
+Signing key SHA-256:
+
+```
+0E:7A:8A:A3:6F:33:07:95:8F:91:80:2E:9C:BA:27:90:60:8B:EE:2D:83:A2:E5:CF:01:55:C9:03:7A:67:9E:5F
+```
+
+The URL serves files only (there is no root `index.html`, so opening the folder
+itself in a browser shows 404). F-Droid appends `/index-v1.jar` itself.
