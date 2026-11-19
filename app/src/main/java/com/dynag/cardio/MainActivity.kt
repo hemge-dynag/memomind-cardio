@@ -3,7 +3,10 @@ package com.dynag.cardio
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.os.PowerManager
 import android.os.Build
 import android.os.Bundle
 import android.view.View
@@ -38,9 +41,7 @@ import java.util.Locale
  * plugin / Web Bridge service for the glasses).
  */
 class MainActivity : AppCompatActivity(),
-    HeartRateManager.Listener,
-    LocationTracker.Listener,
-    GlassesHudClient.Listener {
+    HeartRateManager.Listener {
 
     private lateinit var bpmText: TextView
     private lateinit var distText: TextView
@@ -53,23 +54,21 @@ class MainActivity : AppCompatActivity(),
     private lateinit var btnSensor: Button
     private lateinit var btnGlasses: Button
     private lateinit var btnTrack: Button
-    private lateinit var btnPush: Button
     private lateinit var btnCopyLog: Button
     private lateinit var logHeader: View
     private lateinit var logToggle: TextView
     private lateinit var logPanel: View
 
     private lateinit var heartRate: HeartRateManager
-    private lateinit var location: LocationTracker
-    private lateinit var glasses: GlassesHudClient
 
     private var lastBpm: Int = 0
     private var lastDistance = 0.0
     private var lastSpeedKmh = 0.0
     private var lastAverageKmh = 0.0
     private var lastElapsedMs = 0L
-    private var pushEnabled = false
     private var sensorReady = false
+    /** True while the foreground [TrackingService] owns location + glasses. */
+    private var jobRunning = false
 
     /** True while a saved-sensor reconnect is in flight, so a failure can fall
      *  back to a fresh scan once instead of looping. */
@@ -81,14 +80,6 @@ class MainActivity : AppCompatActivity(),
 
     /** True when the sensor last reported poor skin contact. */
     private var lastContactBad = false
-
-    private companion object {
-        // cardio plugin states (see PhoneSDK/examples/cardio/protocol.js)
-        const val STATE_IDLE = 0
-        const val STATE_CONNECTING = 1
-        const val STATE_READING = 2
-        const val STATE_ERROR = 4
-    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -115,7 +106,6 @@ class MainActivity : AppCompatActivity(),
         btnSensor = findViewById(R.id.btnSensor)
         btnGlasses = findViewById(R.id.btnGlasses)
         btnTrack = findViewById(R.id.btnTrack)
-        btnPush = findViewById(R.id.btnPush)
         btnCopyLog = findViewById(R.id.btnCopyLog)
         logHeader = findViewById(R.id.logHeader)
         logToggle = findViewById(R.id.logToggle)
@@ -125,8 +115,6 @@ class MainActivity : AppCompatActivity(),
         logToggle.setOnClickListener { toggleLog() }
 
         heartRate = HeartRateManager(this, this)
-        location = LocationTracker(this, this)
-        glasses = GlassesHudClient(this, this)
 
         btnSensor.setOnClickListener {
             ensurePermissions {
@@ -161,23 +149,20 @@ class MainActivity : AppCompatActivity(),
             true
         }
         btnGlasses.setOnClickListener {
-            ensurePermissions { glasses.connect() }
-        }
-        btnTrack.setOnClickListener {
             ensurePermissions {
-                if (location.isRunning) {
-                    location.stop()
-                    glasses.sendCardioTracking(false, 0L, 0.0, 0.0)
-                    btnTrack.text = getString(R.string.btn_track)
+                // Connection itself lives in the foreground service; this
+                // button re-launches it (and reports if nothing is tracking).
+                if (jobRunning) {
+                    TrackingService.start(this)
                 } else {
-                    location.start()
-                    btnTrack.text = getString(R.string.btn_track_stop)
+                    toast(getString(R.string.msg_start_track_first))
                 }
             }
         }
-        btnPush.setOnClickListener {
-            pushMetrics()
-            appendStatus(getString(R.string.msg_pushed))
+        btnTrack.setOnClickListener {
+            ensurePermissions {
+                if (jobRunning) stopJob() else startJob()
+            }
         }
         btnCopyLog.setOnClickListener {
             val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
@@ -224,12 +209,49 @@ class MainActivity : AppCompatActivity(),
         pendingAction = null
     }
 
-    private fun pushMetrics() {
-        if (!pushEnabled) return
-        glasses.showMetrics(lastBpm, lastDistance, lastSpeedKmh, lastAverageKmh, lastElapsedMs)
-        glasses.sendCardioTracking(
-            location.isRunning, lastElapsedMs, lastSpeedKmh, lastDistance
-        )
+    // ---- foreground tracking job ---------------------------------------
+
+    private fun startJob() {
+        if (!checkBatteryExemption()) return
+        TrackingService.start(this)
+        jobRunning = true
+        btnTrack.text = getString(R.string.btn_track_stop)
+        appendStatus(getString(R.string.msg_track_started))
+    }
+
+    private fun stopJob() {
+        TrackingService.stop(this)
+        jobRunning = false
+        btnTrack.text = getString(R.string.btn_track)
+        lastElapsedMs = 0L
+        lastDistance = 0.0
+        lastSpeedKmh = 0.0
+        lastAverageKmh = 0.0
+        distText.text = getString(R.string.distance_placeholder)
+        speedText.text = getString(R.string.speed_placeholder)
+        timeText.text = getString(R.string.time_placeholder)
+        avgText.text = getString(R.string.average_placeholder)
+        appendStatus(getString(R.string.msg_track_stopped))
+    }
+
+    /**
+     * Screen-off is the whole point of the foreground service: without a
+     * battery exemption many OEM firmwares still cut GPS in Doze, so ask once
+     * and explain instead of silently freezing the HUD.
+     */
+    private fun checkBatteryExemption(): Boolean {
+        val pm = getSystemService(POWER_SERVICE) as? PowerManager ?: return true
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return true
+        runCatching {
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    android.net.Uri.parse("package:$packageName")
+                )
+            )
+        }
+        appendStatus(getString(R.string.msg_battery_hint))
+        return true
     }
 
     // ---- HeartRateManager.Listener ------------------------------------
@@ -262,11 +284,8 @@ class MainActivity : AppCompatActivity(),
             reconnectingSaved = false
             sensorReady = true
             appendStatus(getString(R.string.msg_sensor_ready))
-            glasses.sendCardioConfig(restingBpm, maxBpm)
-            // CONNECTING until a real measurement lands: a strap that reports
-            // "ready" but never sends a beat used to leave the glasses on a
-            // READING page with no value.
-            glasses.sendCardioStatus(if (lastBpm > 0) STATE_READING else STATE_CONNECTING)
+            // The HUD state is owned by the tracking service; only reset the
+            // local value so the next beat re-arms the UI.
             lastBpm = 0
         }
     }
@@ -283,7 +302,6 @@ class MainActivity : AppCompatActivity(),
                 return@runOnUiThread
             }
             appendStatus(getString(R.string.msg_sensor_disconnected))
-            glasses.sendCardioStatus(STATE_IDLE)
         }
     }
 
@@ -300,104 +318,21 @@ class MainActivity : AppCompatActivity(),
                 return@runOnUiThread
             }
             appendStatus(message)
-            glasses.sendCardioStatus(STATE_ERROR)
             toast(message)
         }
     }
 
     override fun onHeartRate(bpm: Int, contactDetected: Boolean?) {
-        // Called on a binder thread: the glasses client is thread-safe, the
-        // widgets are not, so only the UI part is posted.
+        // The HUD stream is sent by the tracking service; the activity only
+        // mirrors the value on screen.
         val firstBeat = lastBpm == 0
         lastBpm = bpm
         lastContactBad = contactDetected == false
-        glasses.showCardioReading(bpm, restingBpm, maxBpm, lastContactBad, bpm)
-        if (firstBeat && pushEnabled) glasses.sendCardioStatus(STATE_READING)
         runOnUiThread {
             bpmText.text = bpm.toString()
             updateZone(bpm)
             subtitleText.text = "Capteur connecté"
             if (firstBeat) appendStatus(getString(R.string.msg_first_beat))
-            if (pushEnabled && sensorReady) pushMetrics()
-        }
-    }
-
-    // ---- LocationTracker.Listener -------------------------------------
-
-    override fun onLocationStatus(message: String) {
-        runOnUiThread { appendStatus(message) }
-    }
-
-    override fun onMetrics(
-        distanceMeters: Double,
-        speedMps: Float,
-        averageSpeedMps: Double,
-        elapsedMillis: Long
-    ) {
-        lastDistance = distanceMeters
-        lastSpeedKmh = speedMps * 3.6
-        lastAverageKmh = averageSpeedMps * 3.6
-        lastElapsedMs = elapsedMillis
-        runOnUiThread {
-            distText.text = formatDistance(distanceMeters)
-            speedText.text = formatSpeed(lastSpeedKmh)
-            val totalSec = elapsedMillis / 1000
-            timeText.text = String.format(Locale.US, "%d:%02d", totalSec / 60, totalSec % 60)
-            avgText.text = formatSpeed(lastAverageKmh)
-            if (pushEnabled && sensorReady) pushMetrics()
-        }
-    }
-
-    // ---- GlassesHudClient.Listener ------------------------------------
-
-    override fun onGlassesStatus(message: String) {
-        runOnUiThread { appendStatus(message) }
-    }
-
-    override fun onGlassesReady() {
-        runOnUiThread {
-            pushEnabled = true
-            btnPush.isEnabled = true
-            appendStatus(getString(R.string.msg_glasses_ready))
-            // The cardio plugin announces EVENT_READY on its own (shortly after
-            // the connection event); onCardioReady() sends the config then.
-        }
-    }
-
-    override fun onGlassesDisconnected() {
-        runOnUiThread {
-            pushEnabled = false
-            btnPush.isEnabled = false
-        }
-    }
-
-    override fun onCardioReady() {
-        runOnUiThread {
-            glasses.sendCardioConfig(restingBpm, maxBpm)
-            glasses.sendCardioStatus(if (sensorReady) STATE_READING else STATE_CONNECTING)
-            appendStatus(getString(R.string.msg_cardio_ready))
-        }
-    }
-
-    private var chooserDialog: AlertDialog? = null
-
-    override fun onGlassesChooser(devices: List<Pair<String, String>>) {
-        runOnUiThread {
-            // Repeated Connect taps must not stack identical dialogs.
-            if (chooserDialog?.isShowing == true) return@runOnUiThread
-            val labels = devices.map { (addr, name) -> "$name\n$addr" }.toTypedArray()
-            val dialog = AlertDialog.Builder(this)
-                .setTitle(R.string.dialog_choose_glasses)
-                .setItems(labels) { _, which ->
-                    val (addr, name) = devices[which]
-                    appendStatus("Appareil sélectionné : $name ($addr).")
-                    glasses.connectToAddress(addr)
-                }
-                .setNegativeButton(R.string.dialog_cancel) { _, _ -> glasses.cancelChooser() }
-                .setOnCancelListener { glasses.cancelChooser() }
-                .create()
-            chooserDialog = dialog
-            dialog.show()
         }
     }
 
@@ -443,9 +378,8 @@ class MainActivity : AppCompatActivity(),
 
     override fun onDestroy() {
         super.onDestroy()
+        // location + glasses belong to the foreground service; it keeps the
+        // workout (and the HUD) alive after the activity is gone.
         heartRate.stop()
-        location.stop()
-        glasses.sendCardioTracking(false, 0L, 0.0, 0.0)
-        glasses.disconnect()
     }
 }

@@ -23,7 +23,6 @@
     <string name="btn_glasses">Connecter les lunettes</string>
     <string name="btn_track">Démarrer le suivi</string>
     <string name="btn_track_stop">Arrêter le suivi</string>
-    <string name="btn_push">Afficher sur les lunettes</string>
     <string name="btn_copy_log">Copier le journal</string>
 
     <string name="section_devices">Appareils</string>
@@ -44,12 +43,16 @@
     <string name="msg_sensor_ready">Capteur cardiaque prêt. En attente du premier battement…</string>
     <string name="msg_sensor_disconnected">Capteur cardiaque déconnecté.</string>
     <string name="msg_first_beat">Première mesure de fréquence reçue.</string>
-    <string name="msg_pushed">Mesures actuelles envoyées aux lunettes.</string>
     <string name="msg_log_copied">Journal copié dans le presse-papiers.</string>
     <string name="msg_glasses_ready">Lunettes prêtes. Envoi en direct activé.</string>
     <string name="msg_cardio_ready">Plugin cardio des lunettes prêt. Affichage sur le HUD.</string>
     <string name="msg_forgot_sensor">Capteur enregistré oublié. Nouvelle recherche…</string>
-    <string name="msg_track_started">Suivi démarré (GPS).</string>
+    <string name="msg_track_started">Suivi démarré : GPS et lunettes continuent écran éteint.</string>
+    <string name="msg_track_stopped">Suivi arrêté.</string>
+    <string name="msg_start_track_first">Démarrez le suivi pour connecter les lunettes.</string>
+    <string name="msg_battery_hint">Autorisez MemoMind Cardio à ignorer l\'optimisation de batterie pour un GPS fiable écran éteint.</string>
+    <string name="notif_channel">Suivi d\'entraînement</string>
+    <string name="notif_stop">Arrêter</string>
 
     <string name="reconnecting_sensor">Reconnexion à %1$s…</string>
     <string name="saved_sensor_missing">Capteur enregistré introuvable ; recherche d\'un nouveau capteur.</string>

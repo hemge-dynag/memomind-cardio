@@ -262,15 +262,6 @@
             android:layout_marginTop="10dp"
             android:text="@string/btn_track" />
 
-        <Button
-            android:id="@+id/btnPush"
-            style="@style/ActionButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:enabled="false"
-            android:text="@string/btn_push" />
-
         <!-- Log (collapsible, hidden by default) -->
         <LinearLayout
             android:id="@+id/logHeader"

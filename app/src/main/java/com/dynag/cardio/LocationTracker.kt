@@ -5,6 +5,7 @@ import android.content.Context
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -46,6 +47,7 @@ class LocationTracker(
     private val locationManager: LocationManager? =
         context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
 
+    private val gpsCallback = LocationListener { }
     private var running = false
     private var lastLocation: Location? = null
     private var distanceMeters = 0.0
@@ -53,6 +55,10 @@ class LocationTracker(
 
     val isRunning: Boolean
         get() = running
+
+    /** Wall time since the track started, 0 when stopped. */
+    val elapsedMillis: Long
+        get() = if (running) SystemClock.elapsedRealtime() - startElapsed else 0L
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -70,13 +76,32 @@ class LocationTracker(
         running = true
         listener.onLocationStatus("Suivi démarré (GPS).")
         try {
-            lm.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                MIN_TIME_MS,
-                MIN_DISTANCE_M,
-                locationListener,
-                Looper.getMainLooper()
-            )
+            // A foreground service of type `location` supplies the callback
+            // executor and keeps the fixes coming while the screen is off.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                lm.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    MIN_TIME_MS,
+                    MIN_DISTANCE_M,
+                    gpsCallback,
+                    null
+                )
+                lm.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    MIN_TIME_MS,
+                    MIN_DISTANCE_M,
+                    gpsCallback,
+                    null
+                )
+            } else {
+                lm.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    MIN_TIME_MS,
+                    MIN_DISTANCE_M,
+                    locationListener,
+                    Looper.getMainLooper()
+                )
+            }
         } catch (e: Exception) {
             running = false
             Log.w(tag, "requestLocationUpdates failed", e)
@@ -89,6 +114,7 @@ class LocationTracker(
         if (!running) return
         running = false
         try {
+            locationManager?.removeUpdates(gpsCallback)
             locationManager?.removeUpdates(locationListener)
         } catch (e: Exception) {
             Log.w(tag, "removeUpdates failed", e)
