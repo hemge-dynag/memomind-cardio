@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
+import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,6 +59,11 @@ class MainActivity : AppCompatActivity(),
     private lateinit var logHeader: View
     private lateinit var logToggle: TextView
     private lateinit var logPanel: View
+    private lateinit var speedRow: View
+    private lateinit var distanceBlock: View
+    private lateinit var speedBlock: View
+    private lateinit var averageBlock: View
+    private lateinit var sportGroup: RadioGroup
 
     private lateinit var heartRate: HeartRateManager
 
@@ -69,6 +75,12 @@ class MainActivity : AppCompatActivity(),
     private var sensorReady = false
     /** True while the foreground [TrackingService] owns location + glasses. */
     private var jobRunning = false
+
+    /**
+     * Generic sport ("Autre sport"): no GPS pace, the glasses only get BPM and
+     * the elapsed time, exactly like the plugin's speed-less mode.
+     */
+    private var noSpeed = false
 
     /** True while a saved-sensor reconnect is in flight, so a failure can fall
      *  back to a fresh scan once instead of looping. */
@@ -110,6 +122,18 @@ class MainActivity : AppCompatActivity(),
         logHeader = findViewById(R.id.logHeader)
         logToggle = findViewById(R.id.logToggle)
         logPanel = findViewById(R.id.logPanel)
+        speedRow = findViewById(R.id.speedRow)
+        distanceBlock = findViewById(R.id.distanceBlock)
+        speedBlock = findViewById(R.id.speedBlock)
+        averageBlock = findViewById(R.id.averageBlock)
+        sportGroup = findViewById(R.id.sportGroup)
+
+        sportGroup.check(R.id.sportRun)
+        sportGroup.setOnCheckedChangeListener { _, checkedId ->
+            noSpeed = checkedId == R.id.sportOther
+            applySportVisibility()
+        }
+        applySportVisibility()
 
         logHeader.setOnClickListener { toggleLog() }
         logToggle.setOnClickListener { toggleLog() }
@@ -178,7 +202,13 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun requiredPermissions(): Array<String> {
-        val location = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        // A generic sport never reads the GPS, so the location permission is
+        // only asked for the sports that compute pace.
+        val location = if (noSpeed) {
+            emptyArray()
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
@@ -211,12 +241,30 @@ class MainActivity : AppCompatActivity(),
 
     // ---- foreground tracking job ---------------------------------------
 
+    /** Generic sports drop the GPS metrics: only heart rate and time remain. */
+    private fun applySportVisibility() {
+        val hide = if (noSpeed) View.GONE else View.VISIBLE
+        distanceBlock.visibility = hide
+        speedBlock.visibility = hide
+        averageBlock.visibility = hide
+        speedRow.visibility = hide
+        if (noSpeed) {
+            distText.text = getString(R.string.distance_placeholder)
+            speedText.text = getString(R.string.speed_placeholder)
+            avgText.text = getString(R.string.average_placeholder)
+        }
+    }
+
     private fun startJob() {
         if (!checkBatteryExemption()) return
-        TrackingService.start(this)
+        TrackingService.start(this, noSpeed)
         jobRunning = true
         btnTrack.text = getString(R.string.btn_track_stop)
-        appendStatus(getString(R.string.msg_track_started))
+        appendStatus(
+            getString(
+                if (noSpeed) R.string.msg_track_started_other else R.string.msg_track_started
+            )
+        )
     }
 
     private fun stopJob() {

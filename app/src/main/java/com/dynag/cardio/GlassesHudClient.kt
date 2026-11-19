@@ -985,10 +985,16 @@ class GlassesHudClient(
      * Report the tracking metrics to the plugin (command 4). With [active]
      * false the glasses drop the metrics line; the values are ignored then.
      */
-    fun sendCardioTracking(active: Boolean, elapsedMillis: Long, speedKmh: Double, distanceMeters: Double) {
+    fun sendCardioTracking(
+        active: Boolean,
+        elapsedMillis: Long,
+        speedKmh: Double,
+        distanceMeters: Double,
+        noSpeed: Boolean = false
+    ) {
         if (!cardioReady) return
         sendCardioPayload(
-            GmFrame.cardioTracking(active, elapsedMillis / 1000, speedKmh, distanceMeters)
+            GmFrame.cardioTracking(active, elapsedMillis / 1000, speedKmh, distanceMeters, noSpeed)
         )
     }
 
@@ -1046,10 +1052,22 @@ class GlassesHudClient(
      * Each object is a separate Web Bridge text object with a stable id, so a
      * re-send updates it in place. Objects are enqueued in order.
      */
-    fun showMetrics(bpm: Int, distanceMeters: Double, speedKmh: Double, averageKmh: Double, elapsedMillis: Long) {
+    fun showMetrics(
+        bpm: Int,
+        distanceMeters: Double,
+        speedKmh: Double,
+        averageKmh: Double,
+        elapsedMillis: Long,
+        noSpeed: Boolean = false
+    ) {
         sendText(OBJECT_HR, "$bpm BPM")
-        sendText(OBJECT_METRICS, formatDistanceSpeed(distanceMeters, speedKmh))
-        sendText(OBJECT_TIME, formatTimeAvg(elapsedMillis, averageKmh))
+        if (noSpeed) {
+            sendText(OBJECT_METRICS, "Sport libre")
+            sendText(OBJECT_TIME, formatElapsed(elapsedMillis))
+        } else {
+            sendText(OBJECT_METRICS, formatDistanceSpeed(distanceMeters, speedKmh))
+            sendText(OBJECT_TIME, formatTimeAvg(elapsedMillis, averageKmh))
+        }
     }
 
     private fun sendText(objectId: Int, text: String) {
@@ -1077,6 +1095,11 @@ class GlassesHudClient(
     private fun formatDistanceSpeed(distanceMeters: Double, speedKmh: Double): String {
         val km = distanceMeters / 1000.0
         return String.format(java.util.Locale.US, "%.2f km · %.1f km/h", km, speedKmh)
+    }
+
+    private fun formatElapsed(elapsedMillis: Long): String {
+        val totalSec = elapsedMillis / 1000
+        return String.format(java.util.Locale.US, "%d:%02d", totalSec / 60, totalSec % 60)
     }
 
     private fun formatTimeAvg(elapsedMillis: Long, averageKmh: Double): String {

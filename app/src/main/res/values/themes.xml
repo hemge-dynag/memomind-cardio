@@ -76,6 +76,16 @@
         <item name="android:textColor">@color/on_accent</item>
     </style>
 
+    <style name="SportChip" parent="Widget.Material3.CompoundButton.RadioButton">
+        <item name="android:minHeight">44dp</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/sport_radio_text</item>
+        <item name="android:button">@null</item>
+        <item name="android:gravity">center</item>
+        <item name="android:background">?attr/selectableItemBackground</item>
+    </style>
+
     <style name="Card">
         <item name="android:background">@drawable/bg_card</item>
         <item name="android:padding">20dp</item>

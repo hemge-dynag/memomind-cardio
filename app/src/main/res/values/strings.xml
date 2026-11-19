@@ -7,6 +7,11 @@
     <string name="bpm_caption">Fréquence cardiaque</string>
     <string name="zone_caption">Zone d\'effort</string>
 
+    <string name="sport_title">Sport</string>
+    <string name="sport_run">Course</string>
+    <string name="sport_walk">Marche</string>
+    <string name="sport_other">Autre sport</string>
+
     <string name="metrics_title">Entraînement</string>
     <string name="distance_label">Distance</string>
     <string name="speed_label">Vitesse</string>
@@ -48,6 +53,7 @@
     <string name="msg_cardio_ready">Plugin cardio des lunettes prêt. Affichage sur le HUD.</string>
     <string name="msg_forgot_sensor">Capteur enregistré oublié. Nouvelle recherche…</string>
     <string name="msg_track_started">Suivi démarré : GPS et lunettes continuent écran éteint.</string>
+    <string name="msg_track_started_other">Suivi démarré : BPM et temps sur les lunettes, écran éteint.</string>
     <string name="msg_track_stopped">Suivi arrêté.</string>
     <string name="msg_start_track_first">Démarrez le suivi pour connecter les lunettes.</string>
     <string name="msg_battery_hint">Autorisez MemoMind Cardio à ignorer l\'optimisation de batterie pour un GPS fiable écran éteint.</string>

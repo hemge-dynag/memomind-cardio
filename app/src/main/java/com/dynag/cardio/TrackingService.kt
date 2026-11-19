@@ -47,6 +47,8 @@ class TrackingService : Service(),
     private var lastElapsedMs = 0L
     private var lastTrackingSentAt = 0L
     private var lastHudStatusAt = 0L
+    /** Generic sport: no GPS pace, the HUD keeps only BPM and the timer. */
+    private var noSpeed = false
 
     private val restingBpm = 60
     private val maxBpm = 190
@@ -63,10 +65,11 @@ class TrackingService : Service(),
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                noSpeed = intent.getBooleanExtra(EXTRA_NO_SPEED, false)
                 startAsForeground("Suivi démarré")
                 connectGlasses()
                 heartRate.connectSaved()
-                location.start()
+                if (!noSpeed) location.start()
                 startTrackingTicker()
             }
             ACTION_STOP -> stopSelf()
@@ -85,7 +88,7 @@ class TrackingService : Service(),
         handler.removeCallbacksAndMessages(null)
         if (location.isRunning) location.stop()
         heartRate.stop()
-        glasses.sendCardioTracking(false, 0L, 0.0, 0.0)
+        glasses.sendCardioTracking(false, 0L, 0.0, 0.0, noSpeed)
         glasses.disconnect()
         super.onDestroy()
     }
@@ -138,11 +141,15 @@ class TrackingService : Service(),
     private fun updateNotification() {
         val km = lastDistance / 1000.0
         val totalSec = lastElapsedMs / 1000
-        val text = String.format(
-            Locale.US,
-            "%d BPM · %.2f km · %.1f km/h · %d:%02d",
-            lastBpm, km, lastSpeedKmh, totalSec / 60, totalSec % 60
-        )
+        val text = if (noSpeed) {
+            String.format(Locale.US, "%d BPM · %d:%02d", lastBpm, totalSec / 60, totalSec % 60)
+        } else {
+            String.format(
+                Locale.US,
+                "%d BPM · %.2f km · %.1f km/h · %d:%02d",
+                lastBpm, km, lastSpeedKmh, totalSec / 60, totalSec % 60
+            )
+        }
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(
             NOTIF_ID,
@@ -188,7 +195,7 @@ class TrackingService : Service(),
         if (now - lastTrackingSentAt >= TRACKING_RESEND_MS) {
             lastTrackingSentAt = now
             glasses.sendCardioTracking(
-                location.isRunning, lastElapsedMs, lastSpeedKmh, lastDistance
+                location.isRunning, lastElapsedMs, lastSpeedKmh, lastDistance, noSpeed
             )
         }
     }
@@ -233,7 +240,9 @@ class TrackingService : Service(),
         pushEnabled = true
         glasses.sendCardioConfig(restingBpm, maxBpm)
         glasses.sendCardioStatus(if (sensorReady) STATE_READING else STATE_CONNECTING)
-        glasses.showMetrics(lastBpm, lastDistance, lastSpeedKmh, lastAverageKmh, lastElapsedMs)
+        glasses.showMetrics(
+            lastBpm, lastDistance, lastSpeedKmh, lastAverageKmh, lastElapsedMs, noSpeed
+        )
         pushTracking()
     }
 
@@ -302,10 +311,12 @@ class TrackingService : Service(),
 
         const val ACTION_START = "com.dynag.cardio.action.START_TRACKING"
         const val ACTION_STOP = "com.dynag.cardio.action.STOP_TRACKING"
+        const val EXTRA_NO_SPEED = "com.dynag.cardio.extra.NO_SPEED"
 
-        fun start(context: Context) {
+        fun start(context: Context, noSpeed: Boolean = false) {
             val intent = Intent(context, TrackingService::class.java)
                 .setAction(ACTION_START)
+                .putExtra(EXTRA_NO_SPEED, noSpeed)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

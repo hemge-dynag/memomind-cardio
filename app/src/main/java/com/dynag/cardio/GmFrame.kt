@@ -56,6 +56,9 @@ object GmFrame {
     const val CH_CARDIO_DOWN: Int = 0x4344
     const val CH_CARDIO_UP: Int = 0x4355
 
+    /** TRACKING flag: the sport has no pace, so the HUD only shows the timer. */
+    const val TRACKING_NO_SPEED: Int = 0x02
+
     /**
      * Encode a single TLV (type + 24-bit big-endian length + value).
      */
@@ -291,9 +294,16 @@ object GmFrame {
      * distance_m (4 LE)`.
      * `flags` bit 0 = tracking active. When clear the remaining fields are
      * still sent (zeros) so the glasses hide the metrics line.
+     * `flags` bit 1 = sport without speed: the plugin shows only the timer.
      */
-    fun cardioTracking(active: Boolean, elapsedSec: Long, speedKmh: Double, distanceMeters: Double): ByteArray {
-        val flags = if (active) 1 else 0
+    fun cardioTracking(
+        active: Boolean,
+        elapsedSec: Long,
+        speedKmh: Double,
+        distanceMeters: Double,
+        noSpeed: Boolean = false
+    ): ByteArray {
+        val flags = (if (active) 1 else 0) or (if (noSpeed) TRACKING_NO_SPEED else 0)
         val sec = elapsedSec.coerceIn(0L, 0xFFFFFFFFL)
         val dkmh = (speedKmh * 10.0).toLong().coerceIn(0L, 65535L)
         val dist = distanceMeters.toLong().coerceIn(0L, 0xFFFFFFFFL)

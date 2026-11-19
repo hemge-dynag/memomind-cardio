@@ -110,6 +110,48 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
+        <!-- Sport selector -->
+        <TextView
+            style="@style/SectionTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="10dp"
+            android:text="@string/sport_title" />
+
+        <RadioGroup
+            android:id="@+id/sportGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card"
+            android:orientation="horizontal"
+            android:padding="6dp">
+
+            <RadioButton
+                android:id="@+id/sportRun"
+                style="@style/SportChip"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/sport_run" />
+
+            <RadioButton
+                android:id="@+id/sportWalk"
+                style="@style/SportChip"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/sport_walk" />
+
+            <RadioButton
+                android:id="@+id/sportOther"
+                style="@style/SportChip"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/sport_other" />
+        </RadioGroup>
+
         <!-- Metrics -->
         <TextView
             style="@style/SectionTitle"
@@ -132,6 +174,7 @@
                 android:orientation="horizontal">
 
                 <LinearLayout
+                    android:id="@+id/distanceBlock"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
@@ -153,6 +196,7 @@
                 </LinearLayout>
 
                 <LinearLayout
+                    android:id="@+id/speedBlock"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
@@ -175,6 +219,7 @@
             </LinearLayout>
 
             <View
+                android:id="@+id/speedRow"
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
                 android:layout_marginTop="16dp"
@@ -208,6 +253,7 @@
                 </LinearLayout>
 
                 <LinearLayout
+                    android:id="@+id/averageBlock"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
