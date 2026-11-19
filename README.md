@@ -9,10 +9,20 @@ glasses `.gmp` plugins) has **no Bluetooth / health-sensor access**. Reading a
 heart-rate sensor requires native Bluetooth, so the only route is a native
 Android app running outside the plugin model — which is what this is.
 
-> Status: **1.2.14 — source-only**. The project is a complete, buildable Android
+> Status: **1.2.17 — source-only**. The project is a complete, buildable Android
 > Studio project. It has not been compiled into an APK in the authoring
 > environment (no Android SDK available there); build it locally with Android
 > Studio or the Gradle wrapper.
+>
+> **1.2.17** (sport selector):
+> - New "Sport" block with three choices: *Course* (run), *Marche* (walk) and
+>   *Autre sport* (generic).
+> - Run and walk keep the full metrics UI (speed, distance, average) and start
+>   the location foreground service.
+> - *Autre sport* hides speed/distance/average, does not ask for the location
+>   permission, and sends `TRACKING` with the `TRACKING_NO_SPEED` flag so the
+>   glasses HUD shows only BPM and elapsed time.
+> - Requires glasses plugin **cardio v3**.
 >
 > **1.2.15** (collapsible log):
 > - The status log is now hidden by default; tap the "Journal" header (or its
@@ -278,3 +288,32 @@ app/src/main/
 
 Provided as-is for the MemoMind ecosystem. The MemoMind protocols are documented
 in the public MemoMind Plugin Open Platform SDK.
+
+## Glasses plugin (`glass/`)
+
+The glasses side lives in this repository too:
+
+- `glass/cardio.c` — LVGL plugin source (`com.dynag.cardio.glass`), version 3.
+- `glass/manifest.json` — plugin manifest (`version: 3`).
+- `glass/cardio.gmp` — compiled plugin, install once with Plugin Studio.
+- Protocol `gm.cardio` 1.0, command `TRACKING (4)`:
+  `[ver=1, 4, flags, time_s:u32le, speed_0.1kmh:u16le, distance_m:u32le]`.
+  `flags` bit 0 = tracking active, bit 1 (`0x02`) = speed-less sport
+  (HUD shows BPM + elapsed time only).
+
+Rebuild from a Plugin Open Platform workspace:
+
+```bash
+python3 GlassSDK/build.py build --example cardio
+```
+
+## APK
+
+Signed release APK: `apk/memomind-cardio-1.2.17.apk`
+(sha256 `eb31f5954068169c94dc426f5fd577b67b2fc71f250eced319a606faabe6cf78`).
+
+## F-Droid repository
+
+The F-Droid index for this APK is published from the separate repository
+[`hemge-dynag/fdroid`](https://github.com/hemge-dynag/fdroid) (fdroidserver
+configuration + signing key, metadata under `metadata/`).
